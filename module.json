@@ -1,0 +1,344 @@
+{
+  "name": "Yamaha DM7 OSC",
+  "type": "OSC",
+  "path": "Hardware",
+
+  "version": "0.1.0",
+  "description": "Control a Yamaha DM7 / DM7 Compact mixing console over OSC (yosc:req protocol). Core live-mixing set: faders, on, pan, sends, labels, DCA & mute groups, scene recall. Bidirectional (feedback experimental).",
+  "url": "https://github.com/vkoeppel/DM7-OSC-Chataigne-Module",
+  "downloadURL": "https://github.com/vkoeppel/DM7-OSC-Chataigne-Module",
+
+  "hasInput": true,
+  "hasOutput": true,
+
+  "hideDefaultCommands": false,
+
+  "defaults": {
+    "autoAdd": false,
+    "oscInput": {
+      "localPort": 49900
+    },
+    "oscOutput": {
+      "local": false,
+      "remoteHost": "192.168.0.128",
+      "remotePort": 49900
+    }
+  },
+
+  "parameters": {
+    "Console Model": {
+      "type": "Enum",
+      "options": {
+        "DM7 (120 inputs)": "DM7",
+        "DM7 Compact (72 inputs)": "DM7C"
+      },
+      "default": "DM7"
+    },
+    "Generate Feedback Values": {
+      "type": "Boolean",
+      "default": true,
+      "description": "Create a two-way value tree (Level/On/Pan/Name) for the main channel strips. Turn off for a lighter, send-only module."
+    },
+    "Log Unhandled Incoming": {
+      "type": "Boolean",
+      "default": true,
+      "description": "Log any incoming OSC that the parser does not recognise. Useful for reverse-engineering DM7 feedback, which is not documented in the OSC spec."
+    }
+  },
+
+  "hideDefaultParameters": ["autoAdd"],
+
+  "scripts": [
+    "DM7-OSC.js"
+  ],
+
+  "values": {},
+
+  "commands": {
+    "Input Fader Level": {
+      "menu": "Input Channel",
+      "callback": "inFaderLevel",
+      "parameters": {
+        "Channel": { "type": "Integer", "min": 1, "max": 120, "default": 1 },
+        "Level (dB)": { "type": "Float", "min": -138, "max": 10, "default": 0 }
+      }
+    },
+    "Input Fader On": {
+      "menu": "Input Channel",
+      "callback": "inFaderOn",
+      "parameters": {
+        "Channel": { "type": "Integer", "min": 1, "max": 120, "default": 1 },
+        "On": { "type": "Boolean", "default": true }
+      }
+    },
+    "Input Pan": {
+      "menu": "Input Channel",
+      "callback": "inPan",
+      "parameters": {
+        "Channel": { "type": "Integer", "min": 1, "max": 120, "default": 1 },
+        "Pan": { "type": "Integer", "min": -63, "max": 63, "default": 0 }
+      }
+    },
+    "Input Name": {
+      "menu": "Input Channel",
+      "callback": "inName",
+      "parameters": {
+        "Channel": { "type": "Integer", "min": 1, "max": 120, "default": 1 },
+        "Name": { "type": "String", "default": "" }
+      }
+    },
+    "Input Color": {
+      "menu": "Input Channel",
+      "callback": "inColor",
+      "parameters": {
+        "Channel": { "type": "Integer", "min": 1, "max": 120, "default": 1 },
+        "Color": { "type": "Enum", "options": { "Blue": "Blue", "Green": "Green", "Orange": "Orange", "Pink": "Pink", "Purple": "Purple", "Red": "Red", "SkyBlue": "SkyBlue", "Yellow": "Yellow", "Cyan": "Cyan", "Magenta": "Magenta", "Off": "Off" }, "default": "Blue" }
+      }
+    },
+    "Input to Mix Level": {
+      "menu": "Input Channel/Sends",
+      "callback": "inToMixLevel",
+      "parameters": {
+        "Channel": { "type": "Integer", "min": 1, "max": 120, "default": 1 },
+        "Mix": { "type": "Integer", "min": 1, "max": 48, "default": 1 },
+        "Level (dB)": { "type": "Float", "min": -138, "max": 10, "default": 0 }
+      }
+    },
+    "Input to Mix On": {
+      "menu": "Input Channel/Sends",
+      "callback": "inToMixOn",
+      "parameters": {
+        "Channel": { "type": "Integer", "min": 1, "max": 120, "default": 1 },
+        "Mix": { "type": "Integer", "min": 1, "max": 48, "default": 1 },
+        "On": { "type": "Boolean", "default": true }
+      }
+    },
+    "Input to Mix Pan": {
+      "menu": "Input Channel/Sends",
+      "callback": "inToMixPan",
+      "parameters": {
+        "Channel": { "type": "Integer", "min": 1, "max": 120, "default": 1 },
+        "Mix": { "type": "Integer", "min": 1, "max": 48, "default": 1 },
+        "Pan": { "type": "Integer", "min": -63, "max": 63, "default": 0 }
+      }
+    },
+    "Input to Matrix Level": {
+      "menu": "Input Channel/Sends",
+      "callback": "inToMtrxLevel",
+      "parameters": {
+        "Channel": { "type": "Integer", "min": 1, "max": 120, "default": 1 },
+        "Matrix": { "type": "Integer", "min": 1, "max": 12, "default": 1 },
+        "Level (dB)": { "type": "Float", "min": -138, "max": 10, "default": 0 }
+      }
+    },
+    "Input to Matrix On": {
+      "menu": "Input Channel/Sends",
+      "callback": "inToMtrxOn",
+      "parameters": {
+        "Channel": { "type": "Integer", "min": 1, "max": 120, "default": 1 },
+        "Matrix": { "type": "Integer", "min": 1, "max": 12, "default": 1 },
+        "On": { "type": "Boolean", "default": true }
+      }
+    },
+    "Input DCA Assign": {
+      "menu": "Input Channel",
+      "callback": "inDcaAssign",
+      "parameters": {
+        "Channel": { "type": "Integer", "min": 1, "max": 120, "default": 1 },
+        "DCA": { "type": "Integer", "min": 1, "max": 24, "default": 1 },
+        "Assigned": { "type": "Boolean", "default": true }
+      }
+    },
+
+    "Mix Fader Level": {
+      "menu": "Mix Channel",
+      "callback": "mixFaderLevel",
+      "parameters": {
+        "Mix": { "type": "Integer", "min": 1, "max": 48, "default": 1 },
+        "Level (dB)": { "type": "Float", "min": -138, "max": 10, "default": 0 }
+      }
+    },
+    "Mix Fader On": {
+      "menu": "Mix Channel",
+      "callback": "mixFaderOn",
+      "parameters": {
+        "Mix": { "type": "Integer", "min": 1, "max": 48, "default": 1 },
+        "On": { "type": "Boolean", "default": true }
+      }
+    },
+    "Mix Name": {
+      "menu": "Mix Channel",
+      "callback": "mixName",
+      "parameters": {
+        "Mix": { "type": "Integer", "min": 1, "max": 48, "default": 1 },
+        "Name": { "type": "String", "default": "" }
+      }
+    },
+    "Mix Color": {
+      "menu": "Mix Channel",
+      "callback": "mixColor",
+      "parameters": {
+        "Mix": { "type": "Integer", "min": 1, "max": 48, "default": 1 },
+        "Color": { "type": "Enum", "options": { "Blue": "Blue", "Green": "Green", "Orange": "Orange", "Pink": "Pink", "Purple": "Purple", "Red": "Red", "SkyBlue": "SkyBlue", "Yellow": "Yellow", "Cyan": "Cyan", "Magenta": "Magenta", "Off": "Off" }, "default": "Blue" }
+      }
+    },
+    "Mix to Matrix Level": {
+      "menu": "Mix Channel/Sends",
+      "callback": "mixToMtrxLevel",
+      "parameters": {
+        "Mix": { "type": "Integer", "min": 1, "max": 48, "default": 1 },
+        "Matrix": { "type": "Integer", "min": 1, "max": 12, "default": 1 },
+        "Level (dB)": { "type": "Float", "min": -138, "max": 10, "default": 0 }
+      }
+    },
+    "Mix to Matrix On": {
+      "menu": "Mix Channel/Sends",
+      "callback": "mixToMtrxOn",
+      "parameters": {
+        "Mix": { "type": "Integer", "min": 1, "max": 48, "default": 1 },
+        "Matrix": { "type": "Integer", "min": 1, "max": 12, "default": 1 },
+        "On": { "type": "Boolean", "default": true }
+      }
+    },
+
+    "Matrix Fader Level": {
+      "menu": "Matrix Channel",
+      "callback": "mtrxFaderLevel",
+      "parameters": {
+        "Matrix": { "type": "Integer", "min": 1, "max": 12, "default": 1 },
+        "Level (dB)": { "type": "Float", "min": -138, "max": 10, "default": 0 }
+      }
+    },
+    "Matrix Fader On": {
+      "menu": "Matrix Channel",
+      "callback": "mtrxFaderOn",
+      "parameters": {
+        "Matrix": { "type": "Integer", "min": 1, "max": 12, "default": 1 },
+        "On": { "type": "Boolean", "default": true }
+      }
+    },
+    "Matrix Name": {
+      "menu": "Matrix Channel",
+      "callback": "mtrxName",
+      "parameters": {
+        "Matrix": { "type": "Integer", "min": 1, "max": 12, "default": 1 },
+        "Name": { "type": "String", "default": "" }
+      }
+    },
+    "Matrix Color": {
+      "menu": "Matrix Channel",
+      "callback": "mtrxColor",
+      "parameters": {
+        "Matrix": { "type": "Integer", "min": 1, "max": 12, "default": 1 },
+        "Color": { "type": "Enum", "options": { "Blue": "Blue", "Green": "Green", "Orange": "Orange", "Pink": "Pink", "Purple": "Purple", "Red": "Red", "SkyBlue": "SkyBlue", "Yellow": "Yellow", "Cyan": "Cyan", "Magenta": "Magenta", "Off": "Off" }, "default": "Blue" }
+      }
+    },
+
+    "Stereo Fader Level": {
+      "menu": "Stereo Channel",
+      "callback": "stFaderLevel",
+      "parameters": {
+        "Stereo": { "type": "Integer", "min": 1, "max": 4, "default": 1 },
+        "Level (dB)": { "type": "Float", "min": -138, "max": 10, "default": 0 }
+      }
+    },
+    "Stereo Fader On": {
+      "menu": "Stereo Channel",
+      "callback": "stFaderOn",
+      "parameters": {
+        "Stereo": { "type": "Integer", "min": 1, "max": 4, "default": 1 },
+        "On": { "type": "Boolean", "default": true }
+      }
+    },
+    "Stereo Name": {
+      "menu": "Stereo Channel",
+      "callback": "stName",
+      "parameters": {
+        "Stereo": { "type": "Integer", "min": 1, "max": 4, "default": 1 },
+        "Name": { "type": "String", "default": "" }
+      }
+    },
+
+    "DCA Fader Level": {
+      "menu": "DCA Group",
+      "callback": "dcaFaderLevel",
+      "parameters": {
+        "DCA": { "type": "Integer", "min": 1, "max": 24, "default": 1 },
+        "Level (dB)": { "type": "Float", "min": -138, "max": 10, "default": 0 }
+      }
+    },
+    "DCA Fader On": {
+      "menu": "DCA Group",
+      "callback": "dcaFaderOn",
+      "parameters": {
+        "DCA": { "type": "Integer", "min": 1, "max": 24, "default": 1 },
+        "On": { "type": "Boolean", "default": true }
+      }
+    },
+    "DCA Name": {
+      "menu": "DCA Group",
+      "callback": "dcaName",
+      "parameters": {
+        "DCA": { "type": "Integer", "min": 1, "max": 24, "default": 1 },
+        "Name": { "type": "String", "default": "" }
+      }
+    },
+    "DCA Color": {
+      "menu": "DCA Group",
+      "callback": "dcaColor",
+      "parameters": {
+        "DCA": { "type": "Integer", "min": 1, "max": 24, "default": 1 },
+        "Color": { "type": "Enum", "options": { "Blue": "Blue", "Green": "Green", "Orange": "Orange", "Pink": "Pink", "Purple": "Purple", "Red": "Red", "SkyBlue": "SkyBlue", "Yellow": "Yellow", "Cyan": "Cyan", "Magenta": "Magenta", "Off": "Off" }, "default": "Blue" }
+      }
+    },
+
+    "Mute Group On": {
+      "menu": "Mute Group",
+      "callback": "muteGroupOn",
+      "parameters": {
+        "Mute Group": { "type": "Integer", "min": 1, "max": 12, "default": 1 },
+        "Muted": { "type": "Boolean", "default": true }
+      }
+    },
+    "Mute Group Name": {
+      "menu": "Mute Group",
+      "callback": "muteGroupName",
+      "parameters": {
+        "Mute Group": { "type": "Integer", "min": 1, "max": 12, "default": 1 },
+        "Name": { "type": "String", "default": "" }
+      }
+    },
+
+    "Recall Scene": {
+      "menu": "Scene",
+      "callback": "recallScene",
+      "parameters": {
+        "Scene List": { "type": "Enum", "options": { "A": "scene_a", "B": "scene_b" }, "default": "scene_a" },
+        "Scene Number": { "type": "Float", "min": 1, "max": 499.99, "default": 1 }
+      }
+    },
+    "Scene Recall Inc": {
+      "menu": "Scene",
+      "callback": "sceneInc",
+      "parameters": {
+        "Scene List": { "type": "Enum", "options": { "A": "scene_a", "B": "scene_b" }, "default": "scene_a" }
+      }
+    },
+    "Scene Recall Dec": {
+      "menu": "Scene",
+      "callback": "sceneDec",
+      "parameters": {
+        "Scene List": { "type": "Enum", "options": { "A": "scene_a", "B": "scene_b" }, "default": "scene_a" }
+      }
+    },
+
+    "Send Raw Set": {
+      "menu": "Advanced",
+      "callback": "sendRawSet",
+      "parameters": {
+        "Parameter ID (with indices)": { "type": "String", "default": "MIXER:Current/InCh/Fader/On/1" },
+        "Value": { "type": "String", "default": "1" }
+      }
+    }
+  }
+}

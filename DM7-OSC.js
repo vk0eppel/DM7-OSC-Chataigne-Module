@@ -5,17 +5,20 @@
  * @author Victor Koeppel
  *
  * Address grammar (set):   /yosc:req/set/<ParamID>/<X>[/<Y>]  <value>
+ * Address grammar (get):   /yosc:req/get/<ParamID>/<X>[/<Y>]           (state query, no value)
  * Scene recall (args):     /yosc:req/ssrecallt_ex  <list>  "<number>"
+ * Scene query (args):      /yosc:req/sscurrentt_ex  <list>            (read current scene)
  * Scene inc/dec (event):   /yosc:req/event  <ParamID>  <list>
  *
  * The console listens on UDP 49900. Set the module's OSC output remoteHost to
  * the console's "For Mixer Control" IP (SETUP > NETWORK).
  *
  * NOTE: The v1.1.0 spec does NOT document the feedback/response format for
- * parameters. The oscEvent() parser below is a best-effort guess (it assumes
- * the console echoes the same MIXER:Current/... address). Enable
- * "Log Unhandled Incoming" and watch the logger against real hardware to
- * confirm / correct the actual format.
+ * parameters (nor the reply to a get/sscurrentt_ex query). The oscEvent()
+ * parser below is a best-effort guess (it scans for the MIXER:Current token in
+ * whatever address the console replies with). The get/refresh commands assume
+ * the yosc "get" verb mirrors "set". Enable "Log Unhandled Incoming" and watch
+ * the logger against real hardware to confirm / correct the actual format.
  */
 
 // ---- constants -------------------------------------------------------------
@@ -23,6 +26,9 @@
 var REQ = "/yosc:req";
 var INF_RAW = -32768; // fader "-inf" sentinel
 var MIN_DB = -138;    // lowest real dB step (raw -13800); <= this => -inf
+
+var REFRESH_RATE = 25; // Hz: update() rate while draining the refresh queue
+var GET_BATCH = 20;    // gets flushed per update() tick during a refresh
 
 var COUNTS = {
 	inputs: 120, // overwritten by model in refreshCounts()
@@ -40,14 +46,17 @@ var SPEC = {
 	inOn:     { cont: "Inputs",   sub: "On",    pid: "MIXER:Current/InCh/Fader/On",    type: "on",    count: "inputs" },
 	inPan:    { cont: "Inputs",   sub: "Pan",   pid: "MIXER:Current/InCh/ToSt/Pan",    type: "pan",   count: "inputs" },
 	inName:   { cont: "Inputs",   sub: "Name",  pid: "MIXER:Current/InCh/Label/Name",  type: "name",  count: "inputs" },
+	inColor:  { cont: "Inputs",   sub: "Color", pid: "MIXER:Current/InCh/Label/Color", type: "color", count: "inputs" },
 
 	mixLevel: { cont: "Mixes",    sub: "Level", pid: "MIXER:Current/Mix/Fader/Level",  type: "level", count: "mixes" },
 	mixOn:    { cont: "Mixes",    sub: "On",    pid: "MIXER:Current/Mix/Fader/On",     type: "on",    count: "mixes" },
 	mixName:  { cont: "Mixes",    sub: "Name",  pid: "MIXER:Current/Mix/Label/Name",   type: "name",  count: "mixes" },
+	mixColor: { cont: "Mixes",    sub: "Color", pid: "MIXER:Current/Mix/Label/Color",  type: "color", count: "mixes" },
 
 	mtxLevel: { cont: "Matrices", sub: "Level", pid: "MIXER:Current/Mtrx/Fader/Level", type: "level", count: "matrices" },
 	mtxOn:    { cont: "Matrices", sub: "On",    pid: "MIXER:Current/Mtrx/Fader/On",    type: "on",    count: "matrices" },
 	mtxName:  { cont: "Matrices", sub: "Name",  pid: "MIXER:Current/Mtrx/Label/Name",  type: "name",  count: "matrices" },
+	mtxColor: { cont: "Matrices", sub: "Color", pid: "MIXER:Current/Mtrx/Label/Color", type: "color", count: "matrices" },
 
 	stLevel:  { cont: "Stereo",   sub: "Level", pid: "MIXER:Current/St/Fader/Level",   type: "level", count: "stereo" },
 	stOn:     { cont: "Stereo",   sub: "On",    pid: "MIXER:Current/St/Fader/On",      type: "on",    count: "stereo" },
@@ -56,6 +65,7 @@ var SPEC = {
 	dcaLevel: { cont: "DCAs",     sub: "Level", pid: "MIXER:Current/DCA/Fader/Level",  type: "level", count: "dca" },
 	dcaOn:    { cont: "DCAs",     sub: "On",    pid: "MIXER:Current/DCA/Fader/On",     type: "on",    count: "dca" },
 	dcaName:  { cont: "DCAs",     sub: "Name",  pid: "MIXER:Current/DCA/Label/Name",   type: "name",  count: "dca" },
+	dcaColor: { cont: "DCAs",     sub: "Color", pid: "MIXER:Current/DCA/Label/Color",  type: "color", count: "dca" },
 
 	muteOn:   { cont: "Mute Groups", sub: "Muted", pid: "MIXER:Current/MuteGrpCtrl/On",         type: "on",   count: "mute" },
 	muteName: { cont: "Mute Groups", sub: "Name",  pid: "MIXER:Current/MuteGrpCtrl/Label/Name", type: "name", count: "mute" }
@@ -63,11 +73,11 @@ var SPEC = {
 
 // Chataigne's JS engine (JUCE) has no for..in, so keys are listed explicitly.
 var SPEC_KEYS = [
-	"inLevel", "inOn", "inPan", "inName",
-	"mixLevel", "mixOn", "mixName",
-	"mtxLevel", "mtxOn", "mtxName",
+	"inLevel", "inOn", "inPan", "inName", "inColor",
+	"mixLevel", "mixOn", "mixName", "mixColor",
+	"mtxLevel", "mtxOn", "mtxName", "mtxColor",
 	"stLevel", "stOn", "stName",
-	"dcaLevel", "dcaOn", "dcaName",
+	"dcaLevel", "dcaOn", "dcaName", "dcaColor",
 	"muteOn", "muteName"
 ];
 var CONT_NAMES = ["Inputs", "Mixes", "Matrices", "Stereo", "DCAs", "Mute Groups"];
@@ -76,7 +86,14 @@ var CONT_NAMES = ["Inputs", "Mixes", "Matrices", "Stereo", "DCAs", "Mute Groups"
 var valueRefs = {};   // key -> { index -> parameter }
 var descByAddr = {};  // value control address -> { key, x }
 var pidToKey = {};    // ParamID string -> key   (for feedback parsing)
+var sceneRefs = {};   // list token ("scene_a"/"scene_b") -> { number, name }
 var isUpdatingFromOSC = false;
+
+// refresh queue: get requests are paced across update() ticks (see #1) instead
+// of blasting ~770 UDP packets in one synchronous burst.
+var getQueue = [];    // pending paramId+indices strings
+var getQueueLen = 0;  // entries filled
+var getQueuePos = 0;  // next entry to send
 
 // ---- lifecycle -------------------------------------------------------------
 
@@ -84,6 +101,7 @@ function init() {
 	refreshCounts();
 	buildPidIndex();
 	generateValues();
+	refreshUpdateRate();
 	script.log("DM7 OSC module ready (" + local.parameters.consoleModel.get() + ", " + COUNTS.inputs + " inputs). Set the OSC output remoteHost to the console IP, port 49900.");
 }
 
@@ -105,6 +123,8 @@ function moduleParameterChanged(param) {
 		generateValues();
 	} else if (param.name == "generateFeedbackValues") {
 		generateValues();
+	} else if (param.name == "scenePollSeconds") {
+		refreshUpdateRate();
 	}
 }
 
@@ -115,40 +135,70 @@ function generateValues() {
 	for (var c = 0; c < CONT_NAMES.length; c++) {
 		local.values.removeContainer(CONT_NAMES[c]);
 	}
+	local.values.removeContainer("Scene");
 	valueRefs = {};
 	descByAddr = {};
+	sceneRefs = {};
+	// pre-init per-key ref maps (avoids chained-bracket assignment later)
+	for (var kp = 0; kp < SPEC_KEYS.length; kp++) valueRefs[SPEC_KEYS[kp]] = {};
+
+	// Scene holder is independent of the strip tree, so scene query/polling works
+	// even in send-only mode (Generate Feedback Values off).
+	buildSceneValues();
 
 	if (!local.parameters.generateFeedbackValues.get()) return;
 
-	var containers = {}; // cont name -> container
-	var subConts = {};   // cont|sub -> container
+	// Channel-first tree: <Container> / <index> / <Level|On|Pan|Name>
+	for (var c2 = 0; c2 < CONT_NAMES.length; c2++) {
+		var contName = CONT_NAMES[c2];
 
-	for (var k = 0; k < SPEC_KEYS.length; k++) {
-		var key = SPEC_KEYS[k];
-		var s = SPEC[key];
-		var n = COUNTS[s.count];
-		if (!containers[s.cont]) containers[s.cont] = local.values.addContainer(s.cont);
-		var subKey = s.cont + "|" + s.sub;
-		if (!subConts[subKey]) {
-			subConts[subKey] = containers[s.cont].addContainer(s.sub);
-			subConts[subKey].setCollapsed(true);
+		// all keys of a container share one channel count; find it
+		var count = 0;
+		for (var kc = 0; kc < SPEC_KEYS.length; kc++) {
+			if (SPEC[SPEC_KEYS[kc]].cont == contName) { count = COUNTS[SPEC[SPEC_KEYS[kc]].count]; break; }
 		}
-		var sub = subConts[subKey];
-		var refs = {};
-		valueRefs[key] = refs;
-		for (var i = 1; i <= n; i++) {
-			var p = addValueParam(sub, i, s.type);
-			refs["" + i] = p;
-			descByAddr[p.getControlAddress()] = { key: key, x: i };
+		if (count == 0) continue;
+
+		var cont = local.values.addContainer(contName);
+		cont.setCollapsed(true);
+		for (var i = 1; i <= count; i++) {
+			var chC = cont.addContainer("" + i);
+			chC.setCollapsed(true);
+			for (var k = 0; k < SPEC_KEYS.length; k++) {
+				var key = SPEC_KEYS[k];
+				var s = SPEC[key];
+				if (s.cont != contName) continue;
+				var p = addValueParam(chC, s.sub, s.type);
+				var refs = valueRefs[key];
+				refs["" + i] = p;
+				descByAddr[p.getControlAddress()] = { key: key, x: i };
+			}
 		}
 	}
 }
 
-function addValueParam(container, i, type) {
-	var name = "" + i;
+// Scene state holders: Scene / <A|B> / Number, Name. Read-only; updated from the
+// (undocumented) sscurrentt_ex reply in oscEvent.
+function buildSceneValues() {
+	var sc = local.values.addContainer("Scene");
+	sc.setCollapsed(true);
+	var lists = ["scene_a", "scene_b"];
+	var labels = ["A", "B"];
+	for (var i = 0; i < 2; i++) {
+		var g = sc.addContainer(labels[i]);
+		var num = g.addStringParameter("Number", "current scene number (x.xx)", "");
+		num.setAttribute("readonly", true);
+		var nm = g.addStringParameter("Name", "current scene name", "");
+		nm.setAttribute("readonly", true);
+		sceneRefs[lists[i]] = { number: num, name: nm };
+	}
+}
+
+function addValueParam(container, name, type) {
 	if (type == "level") return container.addFloatParameter(name, "dB", 0, MIN_DB, 10);
 	if (type == "pan")   return container.addIntParameter(name, "L63..R63", 0, -63, 63);
 	if (type == "on")    return container.addBoolParameter(name, "", false);
+	if (type == "color") return container.addStringParameter(name, "Blue/Orange/Yellow/Purple/Cyan/Magenta/Red/Green/LtGreen/White/Off", "Blue");
 	return container.addStringParameter(name, "", ""); // name
 }
 
@@ -180,14 +230,29 @@ function encode(type, v) {
 	if (type == "level") return dbToRaw(v);
 	if (type == "on")    return v ? 1 : 0;
 	if (type == "pan")   return Math.round(v);
-	return v; // name (string)
+	if (type == "name")  return clampName(v);
+	return v; // color (string)
+}
+
+// Channel/label names are capped at 8 chars by the spec. Truncate (ES3-safe:
+// no String.slice/substring) so an over-length name still sets its first 8.
+function clampName(name) {
+	var s = "" + name;
+	if (s.length <= 8) return s;
+	var out = "";
+	for (var i = 0; i < 8; i++) out += s.charAt(i);
+	return out;
 }
 
 function decode(type, raw) {
 	if (type == "level") return rawToDb(parseInt(raw));
-	if (type == "on")    return parseInt(raw) != 0;
+	if (type == "on") {
+		if (raw === true) return true;   // OSC bool true
+		if (raw === false) return false; // OSC bool false (parseInt(false) is NaN)
+		return parseInt(raw) != 0;       // numeric 0/1
+	}
 	if (type == "pan")   return parseInt(raw);
-	return "" + raw; // name
+	return "" + raw; // name / color
 }
 
 // ---- OSC send helpers ------------------------------------------------------
@@ -197,12 +262,18 @@ function sendSet(paramIdWithIndices, value) {
 	local.send(REQ + "/set/" + paramIdWithIndices, value);
 }
 
+// /yosc:req/get/<paramIdWithIndices>  (no value) — asks the console to report
+// the current value. Reply format is undocumented; oscEvent() handles it.
+function sendGet(paramIdWithIndices) {
+	local.send(REQ + "/get/" + paramIdWithIndices);
+}
+
 // ---- command callbacks (Input Channel) -------------------------------------
 
 function inFaderLevel(ch, db)      { sendSet("MIXER:Current/InCh/Fader/Level/" + ch, dbToRaw(db)); }
 function inFaderOn(ch, on)         { sendSet("MIXER:Current/InCh/Fader/On/" + ch, on ? 1 : 0); }
 function inPan(ch, pan)            { sendSet("MIXER:Current/InCh/ToSt/Pan/" + ch, Math.round(pan)); }
-function inName(ch, name)          { sendSet("MIXER:Current/InCh/Label/Name/" + ch, name); }
+function inName(ch, name)          { sendSet("MIXER:Current/InCh/Label/Name/" + ch, clampName(name)); }
 function inColor(ch, color)        { sendSet("MIXER:Current/InCh/Label/Color/" + ch, color); }
 function inToMixLevel(ch, mix, db) { sendSet("MIXER:Current/InCh/ToMix/Level/" + ch + "/" + mix, dbToRaw(db)); }
 function inToMixOn(ch, mix, on)    { sendSet("MIXER:Current/InCh/ToMix/On/" + ch + "/" + mix, on ? 1 : 0); }
@@ -215,7 +286,7 @@ function inDcaAssign(ch, dca, a)   { sendSet("MIXER:Current/InCh/DCA/Assign/" + 
 
 function mixFaderLevel(mix, db)      { sendSet("MIXER:Current/Mix/Fader/Level/" + mix, dbToRaw(db)); }
 function mixFaderOn(mix, on)         { sendSet("MIXER:Current/Mix/Fader/On/" + mix, on ? 1 : 0); }
-function mixName(mix, name)          { sendSet("MIXER:Current/Mix/Label/Name/" + mix, name); }
+function mixName(mix, name)          { sendSet("MIXER:Current/Mix/Label/Name/" + mix, clampName(name)); }
 function mixColor(mix, color)        { sendSet("MIXER:Current/Mix/Label/Color/" + mix, color); }
 function mixToMtrxLevel(mix, mtx, db){ sendSet("MIXER:Current/Mix/ToMtrx/Level/" + mix + "/" + mtx, dbToRaw(db)); }
 function mixToMtrxOn(mix, mtx, on)   { sendSet("MIXER:Current/Mix/ToMtrx/On/" + mix + "/" + mtx, on ? 1 : 0); }
@@ -224,26 +295,26 @@ function mixToMtrxOn(mix, mtx, on)   { sendSet("MIXER:Current/Mix/ToMtrx/On/" + 
 
 function mtrxFaderLevel(mtx, db) { sendSet("MIXER:Current/Mtrx/Fader/Level/" + mtx, dbToRaw(db)); }
 function mtrxFaderOn(mtx, on)    { sendSet("MIXER:Current/Mtrx/Fader/On/" + mtx, on ? 1 : 0); }
-function mtrxName(mtx, name)     { sendSet("MIXER:Current/Mtrx/Label/Name/" + mtx, name); }
+function mtrxName(mtx, name)     { sendSet("MIXER:Current/Mtrx/Label/Name/" + mtx, clampName(name)); }
 function mtrxColor(mtx, color)   { sendSet("MIXER:Current/Mtrx/Label/Color/" + mtx, color); }
 
 // ---- command callbacks (Stereo Channel) ------------------------------------
 
 function stFaderLevel(st, db) { sendSet("MIXER:Current/St/Fader/Level/" + st, dbToRaw(db)); }
 function stFaderOn(st, on)    { sendSet("MIXER:Current/St/Fader/On/" + st, on ? 1 : 0); }
-function stName(st, name)     { sendSet("MIXER:Current/St/Label/Name/" + st, name); }
+function stName(st, name)     { sendSet("MIXER:Current/St/Label/Name/" + st, clampName(name)); }
 
 // ---- command callbacks (DCA Group) -----------------------------------------
 
 function dcaFaderLevel(dca, db) { sendSet("MIXER:Current/DCA/Fader/Level/" + dca, dbToRaw(db)); }
 function dcaFaderOn(dca, on)    { sendSet("MIXER:Current/DCA/Fader/On/" + dca, on ? 1 : 0); }
-function dcaName(dca, name)     { sendSet("MIXER:Current/DCA/Label/Name/" + dca, name); }
+function dcaName(dca, name)     { sendSet("MIXER:Current/DCA/Label/Name/" + dca, clampName(name)); }
 function dcaColor(dca, color)   { sendSet("MIXER:Current/DCA/Label/Color/" + dca, color); }
 
 // ---- command callbacks (Mute Group) ----------------------------------------
 
 function muteGroupOn(mg, muted) { sendSet("MIXER:Current/MuteGrpCtrl/On/" + mg, muted ? 1 : 0); }
-function muteGroupName(mg, name){ sendSet("MIXER:Current/MuteGrpCtrl/Label/Name/" + mg, name); }
+function muteGroupName(mg, name){ sendSet("MIXER:Current/MuteGrpCtrl/Label/Name/" + mg, clampName(name)); }
 
 // ---- command callbacks (Scene) ---------------------------------------------
 
@@ -254,6 +325,66 @@ function recallScene(list, number) {
 function sceneInc(list) { local.send(REQ + "/event", "MIXER:Lib/Scene/RecallInc", list); }
 function sceneDec(list) { local.send(REQ + "/event", "MIXER:Lib/Scene/RecallDec", list); }
 
+// Ask the console for the current scene number of a list. Reply is undocumented
+// (watch "Log Unhandled Incoming").
+function queryScene(list) { local.send(REQ + "/sscurrentt_ex", list); }
+
+// update() is driven fast while draining a refresh queue, otherwise at the
+// scene-poll interval, otherwise disabled. Chataigne stops periodic updates at
+// rate 0; every update() path is additionally guarded, so a nonzero
+// interpretation of 0 would still be a cheap no-op (#3).
+function refreshUpdateRate() {
+	if (getQueuePos < getQueueLen) { script.setUpdateRate(REFRESH_RATE); return; }
+	var s = local.parameters.scenePollSeconds.get();
+	script.setUpdateRate(s > 0 ? (1.0 / s) : 0);
+}
+
+function update() {
+	if (drainRefreshQueue()) return; // busy refreshing; skip scene poll this tick
+	if (local.parameters.scenePollSeconds.get() <= 0) return;
+	queryScene("scene_a");
+	queryScene("scene_b");
+}
+
+// Send up to GET_BATCH queued gets. Returns true while the queue is draining.
+function drainRefreshQueue() {
+	if (getQueuePos >= getQueueLen) return false;
+	var end = getQueuePos + GET_BATCH;
+	if (end > getQueueLen) end = getQueueLen;
+	for (; getQueuePos < end; getQueuePos++) sendGet(getQueue[getQueuePos]);
+	if (getQueuePos >= getQueueLen) {
+		getQueue = [];
+		getQueueLen = 0;
+		getQueuePos = 0;
+		refreshUpdateRate(); // restore scene-poll (or idle) rate
+		script.log("DM7 OSC: refresh complete.");
+	}
+	return true;
+}
+
+// ---- command callbacks (Query / refresh) -----------------------------------
+
+// Fire a get for every parameter in the feedback value tree so the console
+// reports its current state. This is a burst of messages (one per channel per
+// value type); replies land in oscEvent() once the reply format is confirmed.
+function refreshAllValues() {
+	if (!local.parameters.generateFeedbackValues.get()) {
+		script.log("Refresh: turn on 'Generate Feedback Values' first (nothing to populate).");
+		return;
+	}
+	// Queue the gets; update()/drainRefreshQueue() paces them out (#1).
+	getQueue = [];
+	getQueueLen = 0;
+	getQueuePos = 0;
+	for (var k = 0; k < SPEC_KEYS.length; k++) {
+		var s = SPEC[SPEC_KEYS[k]];
+		var n = COUNTS[s.count];
+		for (var i = 1; i <= n; i++) getQueue[getQueueLen++] = s.pid + "/" + i;
+	}
+	refreshUpdateRate(); // switch update() to fast drain
+	script.log("DM7 OSC: queued " + getQueueLen + " state queries (~" + (GET_BATCH * REFRESH_RATE) + "/s). Enable 'Log Unhandled Incoming' if nothing updates.");
+}
+
 // ---- command callbacks (Advanced) ------------------------------------------
 
 function sendRawSet(paramIdWithIndices, value) {
@@ -262,9 +393,15 @@ function sendRawSet(paramIdWithIndices, value) {
 	sendSet(paramIdWithIndices, v);
 }
 
+function sendRawGet(paramIdWithIndices) {
+	sendGet(paramIdWithIndices);
+}
+
 // ---- incoming OSC (experimental feedback) ----------------------------------
 
 function oscEvent(address, args) {
+	if (handleSceneReply(address, args)) return;
+
 	// Best-effort: find the "MIXER:Current" token, treat the trailing numeric
 	// token(s) as X (/Y) indices and the rest as the ParamID. Value is args[0]
 	// if present, else the last address token.
@@ -296,6 +433,20 @@ function oscEvent(address, args) {
 	isUpdatingFromOSC = true;
 	target.set(decode(SPEC[key].type, raw));
 	isUpdatingFromOSC = false;
+}
+
+// Best-effort parse of the sscurrentt_ex reply (format undocumented in v1.1.0):
+// assume the list token is echoed in args, followed by number (and maybe name).
+function handleSceneReply(address, args) {
+	if (address.split("sscurrentt").length <= 1) return false;
+	if (!args || args.length == 0) { logUnhandled(address, args); return true; }
+	var ref = sceneRefs["" + args[0]];
+	if (!ref) { logUnhandled(address, args); return true; }
+	isUpdatingFromOSC = true;
+	if (args.length > 1) ref.number.set("" + args[1]);
+	if (args.length > 2) ref.name.set("" + args[2]);
+	isUpdatingFromOSC = false;
+	return true;
 }
 
 function isIntToken(t) {

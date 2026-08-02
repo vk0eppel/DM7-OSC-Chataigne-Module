@@ -4,7 +4,7 @@
   "path": "Hardware",
   "author": "Victor Koeppel",
 
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Control a Yamaha DM7 / DM7 Compact mixing console over OSC (yosc:req protocol). Core live-mixing set: faders, on, pan, sends, labels, DCA & mute groups, scene recall. Bidirectional (feedback experimental).",
   "url": "https://github.com/vkoeppel/DM7-OSC-Chataigne-Module",
   "downloadURL": "https://github.com/vkoeppel/DM7-OSC-Chataigne-Module",
@@ -44,6 +44,13 @@
       "type": "Boolean",
       "default": true,
       "description": "Log any incoming OSC that the parser does not recognise. Useful for reverse-engineering DM7 feedback, which is not documented in the OSC spec."
+    },
+    "Scene Poll Seconds": {
+      "type": "Float",
+      "default": 0,
+      "min": 0,
+      "max": 3600,
+      "description": "Poll the current scene of both lists every N seconds (0 = off). Updates the Scene value holders. Reply format is undocumented, so this is experimental."
     }
   },
 
@@ -93,7 +100,7 @@
       "callback": "inColor",
       "parameters": {
         "Channel": { "type": "Integer", "min": 1, "max": 120, "default": 1 },
-        "Color": { "type": "Enum", "options": { "Blue": "Blue", "Green": "Green", "Orange": "Orange", "Pink": "Pink", "Purple": "Purple", "Red": "Red", "SkyBlue": "SkyBlue", "Yellow": "Yellow", "Cyan": "Cyan", "Magenta": "Magenta", "Off": "Off" }, "default": "Blue" }
+        "Color": { "type": "Enum", "options": { "Blue": "Blue", "Orange": "Orange", "Yellow": "Yellow", "Purple": "Purple", "Cyan": "Cyan", "Magenta": "Magenta", "Red": "Red", "Green": "Green", "LtGreen": "LtGreen", "White": "White", "Off": "Off" }, "default": "Blue" }
       }
     },
     "Input to Mix Level": {
@@ -180,7 +187,7 @@
       "callback": "mixColor",
       "parameters": {
         "Mix": { "type": "Integer", "min": 1, "max": 48, "default": 1 },
-        "Color": { "type": "Enum", "options": { "Blue": "Blue", "Green": "Green", "Orange": "Orange", "Pink": "Pink", "Purple": "Purple", "Red": "Red", "SkyBlue": "SkyBlue", "Yellow": "Yellow", "Cyan": "Cyan", "Magenta": "Magenta", "Off": "Off" }, "default": "Blue" }
+        "Color": { "type": "Enum", "options": { "Blue": "Blue", "Orange": "Orange", "Yellow": "Yellow", "Purple": "Purple", "Cyan": "Cyan", "Magenta": "Magenta", "Red": "Red", "Green": "Green", "LtGreen": "LtGreen", "White": "White", "Off": "Off" }, "default": "Blue" }
       }
     },
     "Mix to Matrix Level": {
@@ -231,7 +238,7 @@
       "callback": "mtrxColor",
       "parameters": {
         "Matrix": { "type": "Integer", "min": 1, "max": 12, "default": 1 },
-        "Color": { "type": "Enum", "options": { "Blue": "Blue", "Green": "Green", "Orange": "Orange", "Pink": "Pink", "Purple": "Purple", "Red": "Red", "SkyBlue": "SkyBlue", "Yellow": "Yellow", "Cyan": "Cyan", "Magenta": "Magenta", "Off": "Off" }, "default": "Blue" }
+        "Color": { "type": "Enum", "options": { "Blue": "Blue", "Orange": "Orange", "Yellow": "Yellow", "Purple": "Purple", "Cyan": "Cyan", "Magenta": "Magenta", "Red": "Red", "Green": "Green", "LtGreen": "LtGreen", "White": "White", "Off": "Off" }, "default": "Blue" }
       }
     },
 
@@ -289,7 +296,7 @@
       "callback": "dcaColor",
       "parameters": {
         "DCA": { "type": "Integer", "min": 1, "max": 24, "default": 1 },
-        "Color": { "type": "Enum", "options": { "Blue": "Blue", "Green": "Green", "Orange": "Orange", "Pink": "Pink", "Purple": "Purple", "Red": "Red", "SkyBlue": "SkyBlue", "Yellow": "Yellow", "Cyan": "Cyan", "Magenta": "Magenta", "Off": "Off" }, "default": "Blue" }
+        "Color": { "type": "Enum", "options": { "Blue": "Blue", "Orange": "Orange", "Yellow": "Yellow", "Purple": "Purple", "Cyan": "Cyan", "Magenta": "Magenta", "Red": "Red", "Green": "Green", "LtGreen": "LtGreen", "White": "White", "Off": "Off" }, "default": "Blue" }
       }
     },
 
@@ -332,6 +339,19 @@
         "Scene List": { "type": "Enum", "options": { "A": "scene_a", "B": "scene_b" }, "default": "scene_a" }
       }
     },
+    "Query Current Scene": {
+      "menu": "Scene",
+      "callback": "queryScene",
+      "parameters": {
+        "Scene List": { "type": "Enum", "options": { "A": "scene_a", "B": "scene_b" }, "default": "scene_a" }
+      }
+    },
+
+    "Refresh All Feedback Values": {
+      "menu": "Query",
+      "callback": "refreshAllValues",
+      "parameters": {}
+    },
 
     "Send Raw Set": {
       "menu": "Advanced",
@@ -339,6 +359,13 @@
       "parameters": {
         "Parameter ID (with indices)": { "type": "String", "default": "MIXER:Current/InCh/Fader/On/1" },
         "Value": { "type": "String", "default": "1" }
+      }
+    },
+    "Send Raw Get": {
+      "menu": "Advanced",
+      "callback": "sendRawGet",
+      "parameters": {
+        "Parameter ID (with indices)": { "type": "String", "default": "MIXER:Current/InCh/Fader/Level/1" }
       }
     }
   }

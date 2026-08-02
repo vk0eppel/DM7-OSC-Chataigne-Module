@@ -27,12 +27,19 @@ Up to 4 OSC controllers can be connected to one DM7.
 - Mix: fader level/on, name, colour, sends to Matrix (level/on)
 - Matrix / Stereo / DCA: fader level/on, name, colour
 - Mute groups: on, name
-- Scene: recall (list A/B + number), recall inc/dec
-- Advanced: **Send Raw Set** escape hatch for any `MIXER:Current/...` parameter
+- Scene: recall (list A/B + number), recall inc/dec, query current scene
+- Query: **Refresh All Feedback Values** — fires a `get` for every value in the
+  feedback tree so the console reports its current state (paced across update
+  ticks to avoid flooding the console with UDP)
+- Advanced: **Send Raw Set** / **Send Raw Get** escape hatches for any
+  `MIXER:Current/...` parameter
 
-**Values** (two-way, optional via *Generate Feedback Values*): a channel-strip
-tree (Level / On / Pan / Name) for Input, Mix, Matrix, Stereo, DCA and Mute.
-Changing a value sends the matching `set`; incoming OSC updates it.
+**Values** (two-way, optional via *Generate Feedback Values*): a channel-first
+tree — each strip is its own container holding its values, e.g.
+`Inputs > 66 > Level / On / Pan / Name / Color`, for Input, Mix, Matrix, Stereo,
+DCA and Mute (Colour on Input/Mix/Matrix/DCA; Stereo & Mute have none). Changing
+a value sends the matching `set`; incoming OSC updates it. A read-only
+`Scene > A/B > Number / Name` holder tracks the current scene (see below).
 
 Not yet in scope: EQ/dynamics, monitor, 5.1 surround, cue, channel links.
 
@@ -42,8 +49,8 @@ Not yet in scope: EQ/dynamics, monitor, 5.1 surround, cue, channel links.
 |-----------|------------|
 | Fader / send level | integer dB × 100 (`0 dB → 0`, `-20 → -2000`, `+10 → 1000`, `-∞ → -32768`) |
 | Pan | `-63 … 63` (0 = centre) |
-| Name | string, max 8 chars |
-| Colour | `Blue/Green/Orange/Pink/Purple/Red/SkyBlue/Yellow/Cyan/Magenta/Off` |
+| Name | string, max 8 chars (the module truncates longer names to the first 8) |
+| Colour | `Blue/Orange/Yellow/Purple/Cyan/Magenta/Red/Green/LtGreen/White/Off` |
 
 Address grammar: `/yosc:req/set/<ParamID>/<X>[/<Y>] <value>` — e.g.
 `/yosc:req/set/MIXER:Current/InCh/Fader/Level/61 -2000`.
@@ -51,15 +58,21 @@ Address grammar: `/yosc:req/set/<ParamID>/<X>[/<Y>] <value>` — e.g.
 ## ⚠️ Feedback is experimental
 
 The v1.1.0 spec **does not document the response/feedback format** for
-parameters. The incoming parser assumes the console echoes the same
-`MIXER:Current/...` address. Enable **Log Unhandled Incoming** and watch the
-logger against real hardware to confirm or correct it — then open an issue/PR
-with what you see.
+parameters, nor the reply to a `get` / `sscurrentt_ex` query. The incoming
+parser assumes the console echoes the same `MIXER:Current/...` address, and the
+**Refresh All Feedback Values** command assumes the yosc `get` verb mirrors
+`set` (`/yosc:req/get/<ParamID>/<X>`, no value). Enable **Log Unhandled
+Incoming** and watch the logger against real hardware to confirm or correct
+both — then open an issue/PR with what you see.
 
 **Scenes:** the spec defines no message the console emits when a scene is
-recalled. `sscurrentt_ex scene_a` is a *request* to read the current scene
-number (reply format also undocumented). So scene awareness would require
-polling — not implemented yet.
+recalled, and the reply to `sscurrentt_ex` (read current scene) is also
+undocumented. The module still provides scene-state scaffolding: a
+`Scene > A/B > Number / Name` value holder, a **Query Current Scene** command,
+and an optional **Scene Poll Seconds** parameter that polls both lists on an
+interval. The reply parser is a best-effort guess (list token echoed in the
+args, followed by number then name) — confirm/correct it via *Log Unhandled
+Incoming* against real hardware.
 
 ## Development notes
 

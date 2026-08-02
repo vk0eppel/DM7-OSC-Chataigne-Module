@@ -2,6 +2,7 @@
   "name": "Yamaha DM7 OSC",
   "type": "OSC",
   "path": "Hardware",
+  "author": "Victor Koeppel",
 
   "version": "0.1.0",
   "description": "Control a Yamaha DM7 / DM7 Compact mixing console over OSC (yosc:req protocol). Core live-mixing set: faders, on, pan, sends, labels, DCA & mute groups, scene recall. Bidirectional (feedback experimental).",

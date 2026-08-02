@@ -2,6 +2,8 @@
  * Yamaha DM7 / DM7 Compact OSC module for Chataigne
  * Protocol: DM7 Series OSC Specifications v1.1.0
  *
+ * @author Victor Koeppel
+ *
  * Address grammar (set):   /yosc:req/set/<ParamID>/<X>[/<Y>]  <value>
  * Scene recall (args):     /yosc:req/ssrecallt_ex  <list>  "<number>"
  * Scene inc/dec (event):   /yosc:req/event  <ParamID>  <list>

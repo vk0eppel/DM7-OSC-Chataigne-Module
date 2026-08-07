@@ -22,8 +22,8 @@ Up to 4 OSC controllers can be connected to one DM7.
 
 **Commands** (outgoing control):
 
-- Input: fader level/on, pan, name, colour, sends to Mix (level/on/pan) and
-  Matrix (level/on), DCA assign
+- Input: fader level/on, pan, name, colour, head-amp (HA) gain, sends to Mix
+  (level/on/pan) and Matrix (level/on), DCA assign
 - Mix: fader level/on, name, colour, sends to Matrix (level/on)
 - Matrix / Stereo / DCA: fader level/on, name, colour
 - Mute groups: on, name
@@ -39,8 +39,9 @@ Up to 4 OSC controllers can be connected to one DM7.
 
 **Values** (two-way, optional via *Generate Feedback Values*): a channel-first
 tree — each strip is its own container holding its values, e.g.
-`Inputs > 66 > Level / On / Pan / Name / Color`, for Input, Mix, Matrix, Stereo,
-DCA and Mute (Colour on Input/Mix/Matrix/DCA; Stereo & Mute have none). Changing
+`Inputs > 66 > Level / On / Pan / Name / Color / HA Gain`, for Input, Mix, Matrix,
+Stereo, DCA and Mute (Colour on Input/Mix/Matrix/DCA; HA Gain on Input only;
+Stereo & Mute have none). Changing
 a value sends the matching `set`; incoming OSC updates it. A read-only
 `Scene > A/B > Number / Name` holder tracks the current scene (see below).
 
@@ -51,6 +52,7 @@ Not yet in scope: EQ/dynamics, monitor, 5.1 surround, cue, channel links.
 | Parameter | Wire value |
 |-----------|------------|
 | Fader / send level | integer dB × 100 (`0 dB → 0`, `-20 → -2000`, `+10 → 1000`, `-∞ → -32768`) |
+| HA (head-amp) gain | integer dB, **scale 1** — the wire value *is* the dB (`-6 … 66`) |
 | Pan | `-63 … 63` (0 = centre) |
 | Name | string, max 8 chars (the module truncates longer names to the first 8) |
 | Colour | `Blue/Orange/Yellow/Purple/Cyan/Magenta/Red/Green/LtGreen/White/Off` |

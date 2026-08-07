@@ -115,6 +115,14 @@
         "Color": { "type": "Enum", "options": { "Blue": "Blue", "Orange": "Orange", "Yellow": "Yellow", "Purple": "Purple", "Cyan": "Cyan", "Magenta": "Magenta", "Red": "Red", "Green": "Green", "LtGreen": "LtGreen", "White": "White", "Off": "Off" }, "default": "Blue" }
       }
     },
+    "Input HA Gain": {
+      "menu": "Input Channel",
+      "callback": "inHaGain",
+      "parameters": {
+        "Channel": { "type": "Integer", "min": 1, "max": 120, "default": 1 },
+        "Gain (dB)": { "type": "Integer", "min": -6, "max": 66, "default": 0 }
+      }
+    },
     "Input to Mix Level": {
       "menu": "Input Channel/Sends",
       "callback": "inToMixLevel",

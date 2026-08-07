@@ -40,6 +40,9 @@ var REQ = "/yosc:req";
 var INF_RAW = -32768; // fader "-inf" sentinel
 var MIN_DB = -138;    // lowest real dB step (raw -13800); <= this => -inf
 
+var HA_MIN = -6;      // DM7 head-amp gain range (dB, scale 1 -> wire = dB)
+var HA_MAX = 66;
+
 var REFRESH_RATE = 25; // Hz: update() rate while draining the refresh queue
 var GET_BATCH = 20;    // gets flushed per update() tick during a refresh
 
@@ -60,6 +63,9 @@ var SPEC = {
 	inPan:    { cont: "Inputs",   sub: "Pan",   pid: "MIXER:Current/InCh/ToSt/Pan",    type: "pan",   count: "inputs" },
 	inName:   { cont: "Inputs",   sub: "Name",  pid: "MIXER:Current/InCh/Label/Name",  type: "name",  count: "inputs" },
 	inColor:  { cont: "Inputs",   sub: "Color", pid: "MIXER:Current/InCh/Label/Color", type: "color", count: "inputs" },
+	// Head-amp (preamp) gain. DM7: MIXER:Current/InCh/Port/HA/Gain, -6..66 dB, scale 1
+	// (wire value IS the dB, unlike Fader/Level's dB x100). prminfo-verified in firmware.
+	inHaGain: { cont: "Inputs",   sub: "HA Gain", pid: "MIXER:Current/InCh/Port/HA/Gain", type: "hagain", count: "inputs" },
 
 	mixLevel: { cont: "Mixes",    sub: "Level", pid: "MIXER:Current/Mix/Fader/Level",  type: "level", count: "mixes" },
 	mixOn:    { cont: "Mixes",    sub: "On",    pid: "MIXER:Current/Mix/Fader/On",     type: "on",    count: "mixes" },
@@ -86,7 +92,7 @@ var SPEC = {
 
 // Chataigne's JS engine (JUCE) has no for..in, so keys are listed explicitly.
 var SPEC_KEYS = [
-	"inLevel", "inOn", "inPan", "inName", "inColor",
+	"inLevel", "inOn", "inPan", "inName", "inColor", "inHaGain",
 	"mixLevel", "mixOn", "mixName", "mixColor",
 	"mtxLevel", "mtxOn", "mtxName", "mtxColor",
 	"stLevel", "stOn", "stName",
@@ -236,10 +242,11 @@ function buildSceneValues() {
 }
 
 function addValueParam(container, name, type) {
-	if (type == "level") return container.addFloatParameter(name, "dB", 0, MIN_DB, 10);
-	if (type == "pan")   return container.addIntParameter(name, "L63..R63", 0, -63, 63);
-	if (type == "on")    return container.addBoolParameter(name, "", false);
-	if (type == "color") return container.addStringParameter(name, "Blue/Orange/Yellow/Purple/Cyan/Magenta/Red/Green/LtGreen/White/Off", "Blue");
+	if (type == "level")  return container.addFloatParameter(name, "dB", 0, MIN_DB, 10);
+	if (type == "pan")    return container.addIntParameter(name, "L63..R63", 0, -63, 63);
+	if (type == "on")     return container.addBoolParameter(name, "", false);
+	if (type == "color")  return container.addStringParameter(name, "Blue/Orange/Yellow/Purple/Cyan/Magenta/Red/Green/LtGreen/White/Off", "Blue");
+	if (type == "hagain") return container.addIntParameter(name, "dB (-6..66)", 0, HA_MIN, HA_MAX);
 	return container.addStringParameter(name, "", ""); // name
 }
 
@@ -268,11 +275,20 @@ function rawToDb(raw) {
 }
 
 function encode(type, v) {
-	if (type == "level") return dbToRaw(v);
-	if (type == "on")    return v ? 1 : 0;
-	if (type == "pan")   return Math.round(v);
-	if (type == "name")  return clampName(v);
+	if (type == "level")  return dbToRaw(v);
+	if (type == "on")     return v ? 1 : 0;
+	if (type == "pan")    return Math.round(v);
+	if (type == "name")   return clampName(v);
+	if (type == "hagain") return haGainToRaw(v);
 	return v; // color (string)
+}
+
+// DM7 head-amp gain wire value IS the dB (scale 1), clamped to the desk's range.
+function haGainToRaw(db) {
+	var raw = Math.round(db);
+	if (raw < HA_MIN) raw = HA_MIN;
+	if (raw > HA_MAX) raw = HA_MAX;
+	return raw;
 }
 
 // Channel/label names are capped at 8 chars by the spec. Truncate (ES3-safe:
@@ -292,7 +308,8 @@ function decode(type, raw) {
 		if (raw === false) return false; // OSC bool false (parseInt(false) is NaN)
 		return parseInt(raw) != 0;       // numeric 0/1
 	}
-	if (type == "pan")   return parseInt(raw);
+	if (type == "pan")    return parseInt(raw);
+	if (type == "hagain") return parseInt(raw);
 	return "" + raw; // name / color
 }
 
@@ -333,6 +350,7 @@ function inFaderOn(ch, on)         { sendSet("MIXER:Current/InCh/Fader/On/" + ch
 function inPan(ch, pan)            { sendSet("MIXER:Current/InCh/ToSt/Pan/" + ch, Math.round(pan)); }
 function inName(ch, name)          { sendSet("MIXER:Current/InCh/Label/Name/" + ch, clampName(name)); }
 function inColor(ch, color)        { sendSet("MIXER:Current/InCh/Label/Color/" + ch, color); }
+function inHaGain(ch, gain)        { sendSet("MIXER:Current/InCh/Port/HA/Gain/" + ch, haGainToRaw(gain)); }
 function inToMixLevel(ch, mix, db) { sendSet("MIXER:Current/InCh/ToMix/Level/" + ch + "/" + mix, dbToRaw(db)); }
 function inToMixOn(ch, mix, on)    { sendSet("MIXER:Current/InCh/ToMix/On/" + ch + "/" + mix, on ? 1 : 0); }
 function inToMixPan(ch, mix, pan)  { sendSet("MIXER:Current/InCh/ToMix/Pan/" + ch + "/" + mix, Math.round(pan)); }

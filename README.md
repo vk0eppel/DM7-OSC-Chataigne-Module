@@ -31,8 +31,11 @@ Up to 4 OSC controllers can be connected to one DM7.
 - Query: **Refresh All Feedback Values** — fires a `get` for every value in the
   feedback tree so the console reports its current state (paced across update
   ticks to avoid flooding the console with UDP)
-- Advanced: **Send Raw Set** / **Send Raw Get** escape hatches for any
-  `MIXER:Current/...` parameter
+- Feedback transport: **poll** (Refresh + optional Scene Poll) *or* firmware-derived
+  **push** — set *Use Subscribe (push feedback)* to have the desk push changes, with
+  *Keepalive Seconds* holding the session open (see below)
+- Advanced: **Send Raw Set / Get / Subscribe / Unsubscribe** escape hatches for any
+  `MIXER:Current/...` (or `ts:...`) parameter
 
 **Values** (two-way, optional via *Generate Feedback Values*): a channel-first
 tree — each strip is its own container holding its values, e.g.
@@ -55,24 +58,50 @@ Not yet in scope: EQ/dynamics, monitor, 5.1 surround, cue, channel links.
 Address grammar: `/yosc:req/set/<ParamID>/<X>[/<Y>] <value>` — e.g.
 `/yosc:req/set/MIXER:Current/InCh/Fader/Level/61 -2000`.
 
-## ⚠️ Feedback is experimental
+## ⚠️ Feedback is experimental (but firmware-informed)
 
-The v1.1.0 spec **does not document the response/feedback format** for
-parameters, nor the reply to a `get` / `sscurrentt_ex` query. The incoming
-parser assumes the console echoes the same `MIXER:Current/...` address, and the
-**Refresh All Feedback Values** command assumes the yosc `get` verb mirrors
-`set` (`/yosc:req/get/<ParamID>/<X>`, no value). Enable **Log Unhandled
-Incoming** and watch the logger against real hardware to confirm or correct
-both — then open an issue/PR with what you see.
+The public v1.1.0 OSC spec **does not document the response/feedback format**.
+However, reverse-engineering the DM7 firmware (V1.75 `app_console_main`) settles
+the *transport* — see the **YOSC** section of
+[`docs/dm7-rcp-parameters.md`](https://github.com/vkoeppel/Yamaha-RCP-Chataigne-Module/blob/main/docs/dm7-rcp-parameters.md)
+in the sibling Yamaha-RCP module:
 
-**Scenes:** the spec defines no message the console emits when a scene is
-recalled, and the reply to `sscurrentt_ex` (read current scene) is also
-undocumented. The module still provides scene-state scaffolding: a
-`Scene > A/B > Number / Name` value holder, a **Query Current Scene** command,
-and an optional **Scene Poll Seconds** parameter that polls both lists on an
-interval. The reply parser is a best-effort guess (list token echoed in the
-args, followed by number then name) — confirm/correct it via *Log Unhandled
-Incoming* against real hardware.
+- Replies and pushes arrive under **fixed address prefixes**, not an echoed
+  `MIXER:Current/...` address: `/yosc:ok/get/...` (reply to a `get`),
+  `/yosc:notify/set/...` and `/yosc:okm/set/...` (pushed updates),
+  `/yosc:ok/keepalive`, `/yosc:error/...`. The parser now dispatches on these
+  (with the old `MIXER:Current` scan kept only as a last-resort fallback).
+- The OSC server has **`subscribe` / `unsubscribe` / `keepalive`** — real push
+  feedback, so you don't have to poll. *Use Subscribe (push feedback)* subscribes
+  the whole value tree; *Keepalive Seconds* pings the desk so it doesn't drop the
+  session (the firmware closes idle sessions, which would kill push).
+
+**Still unverified without a real desk** (this is static firmware extraction, not
+a hardware capture): the exact *argument encoding* after each prefix, and whether
+`MIXER:Current/...` addresses — rather than the `ts:`-prefixed object addresses
+seen in the firmware — are actually subscribable. So push is **off by default**;
+poll (Refresh / Scene Poll) remains the safe fallback. Enable **Log Unhandled
+Incoming**, watch the logger against real hardware, and open an issue/PR with what
+you see.
+
+**Scenes:** the current scene *number* comes from `sscurrentt_ex`; the *name*
+comes from a separate `ssinfot_ex` query (firmware `SSCURRENTT_EX` vs
+`SSINFOT_EX`), which the module now chains automatically. It provides a
+`Scene > A/B > Number / Name` holder, a **Query Current Scene** command, and an
+optional **Scene Poll Seconds** interval poll. The reply arg shapes are still
+best-effort — confirm/correct via *Log Unhandled Incoming*.
+
+**`scpmode`:** the desk's per-session `scpmode` options also work over OSC. Note
+the Bitfocus Companion module sends `scpmode sstype "text"`, but **`sstype` is not
+a DM7 key** and errors on a DM7 — don't copy it.
+
+## Provenance
+
+The feedback/transport details above are derived from static reverse-engineering
+of the DM7 firmware, documented in the sibling
+[Yamaha RCP Chataigne module](https://github.com/vkoeppel/Yamaha-RCP-Chataigne-Module)
+(`docs/dm7-rcp-parameters.md`). They are **not** confirmed against real hardware;
+treat anything feedback-related as experimental until verified on a desk.
 
 ## Development notes
 

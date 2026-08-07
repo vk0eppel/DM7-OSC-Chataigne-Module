@@ -6,19 +6,32 @@
  *
  * Address grammar (set):   /yosc:req/set/<ParamID>/<X>[/<Y>]  <value>
  * Address grammar (get):   /yosc:req/get/<ParamID>/<X>[/<Y>]           (state query, no value)
+ * Subscribe (push fb):     /yosc:req/subscribe/<ParamID>[/<X>]         (ask desk to push changes)
+ * Unsubscribe:             /yosc:req/unsubscribe/<ParamID>[/<X>]
+ * Keepalive (heartbeat):   /yosc:req/keepalive                        (stops idle session drop)
  * Scene recall (args):     /yosc:req/ssrecallt_ex  <list>  "<number>"
- * Scene query (args):      /yosc:req/sscurrentt_ex  <list>            (read current scene)
+ * Scene query (args):      /yosc:req/sscurrentt_ex  <list>            (read current scene number)
+ * Scene info (args):       /yosc:req/ssinfot_ex  <list>  "<number>"  (read scene name/comment)
  * Scene inc/dec (event):   /yosc:req/event  <ParamID>  <list>
  *
  * The console listens on UDP 49900. Set the module's OSC output remoteHost to
  * the console's "For Mixer Control" IP (SETUP > NETWORK).
  *
- * NOTE: The v1.1.0 spec does NOT document the feedback/response format for
- * parameters (nor the reply to a get/sscurrentt_ex query). The oscEvent()
- * parser below is a best-effort guess (it scans for the MIXER:Current token in
- * whatever address the console replies with). The get/refresh commands assume
- * the yosc "get" verb mirrors "set". Enable "Log Unhandled Incoming" and watch
- * the logger against real hardware to confirm / correct the actual format.
+ * FEEDBACK: The public v1.1.0 OSC spec does NOT document the response format,
+ * but reverse-engineering the DM7 firmware (V1.75 app_console_main; see
+ * ../Yamaha-RCP-Chataigne-Module/docs/dm7-rcp-parameters.md, "YOSC" section)
+ * settles the transport: the OSC server has SUBSCRIBE/UNSUBSCRIBE/KEEPALIVE
+ * (real push feedback), and replies/pushes arrive under FIXED address prefixes
+ * — /yosc:ok/get/... (get reply), /yosc:notify/set/... and /yosc:okm/set/...
+ * (pushed updates), /yosc:ok/keepalive, /yosc:error/... — NOT an echoed
+ * MIXER:Current address. oscEvent() dispatches on those prefixes.
+ *
+ * Still unverified WITHOUT a real desk (static firmware extraction only): the
+ * exact argument encoding after each prefix, and whether MIXER:Current/...
+ * addresses (vs the ts:-prefixed object addresses seen in firmware) are
+ * subscribable. So push is experimental and OFF by default; keep polling
+ * (Refresh All Feedback Values / Scene Poll) as the fallback, and watch "Log
+ * Unhandled Incoming" against hardware to confirm / correct the arg format.
  */
 
 // ---- constants -------------------------------------------------------------
@@ -89,11 +102,20 @@ var pidToKey = {};    // ParamID string -> key   (for feedback parsing)
 var sceneRefs = {};   // list token ("scene_a"/"scene_b") -> { number, name }
 var isUpdatingFromOSC = false;
 
-// refresh queue: get requests are paced across update() ticks (see #1) instead
-// of blasting ~770 UDP packets in one synchronous burst.
-var getQueue = [];    // pending paramId+indices strings
-var getQueueLen = 0;  // entries filled
-var getQueuePos = 0;  // next entry to send
+// paced queue: get/subscribe/unsubscribe requests are spread across update()
+// ticks (see #1) instead of blasting ~770 UDP packets in one synchronous burst.
+var getQueue = [];        // pending paramId+indices strings
+var getQueueLen = 0;      // entries filled
+var getQueuePos = 0;      // next entry to send
+var getQueueMode = "get"; // "get" | "subscribe" | "unsubscribe": how to flush entries
+
+// keepalive: wall-clock (seconds) of the next /yosc:req/keepalive to send. Firmware
+// drops idle sessions (scpmode keepalive window); pinging keeps NOTIFY/push alive.
+var nextKeepalive = 0;
+
+// whether we currently hold a subscription, so syncSubscription() only sends the
+// unsubscribe sweep when there's actually something to tear down (not at startup).
+var subscriptionActive = false;
 
 // ---- lifecycle -------------------------------------------------------------
 
@@ -101,6 +123,7 @@ function init() {
 	refreshCounts();
 	buildPidIndex();
 	generateValues();
+	syncSubscription(); // subscribe now if push feedback + value tree are both on
 	refreshUpdateRate();
 	script.log("DM7 OSC module ready (" + local.parameters.consoleModel.get() + ", " + COUNTS.inputs + " inputs). Set the OSC output remoteHost to the console IP, port 49900.");
 }
@@ -121,10 +144,28 @@ function moduleParameterChanged(param) {
 	if (param.name == "consoleModel") {
 		refreshCounts();
 		generateValues();
+		syncSubscription();
 	} else if (param.name == "generateFeedbackValues") {
 		generateValues();
-	} else if (param.name == "scenePollSeconds") {
+		syncSubscription();
+	} else if (param.name == "useSubscribe") {
+		syncSubscription();
+	} else if (param.name == "scenePollSeconds" || param.name == "keepaliveSeconds") {
 		refreshUpdateRate();
+	}
+}
+
+// Subscribe (push feedback) is a persistent request the desk honours until we
+// unsubscribe. Bring it in line with the current toggles: subscribe the whole
+// feedback tree when both "Use Subscribe" and "Generate Feedback Values" are on,
+// otherwise unsubscribe. (Unsubscribing when never subscribed is a harmless no-op.)
+function syncSubscription() {
+	if (local.parameters.useSubscribe.get() && local.parameters.generateFeedbackValues.get()) {
+		queueAllParams("subscribe");
+		subscriptionActive = true;
+	} else if (subscriptionActive) {
+		queueAllParams("unsubscribe");
+		subscriptionActive = false;
 	}
 }
 
@@ -263,9 +304,26 @@ function sendSet(paramIdWithIndices, value) {
 }
 
 // /yosc:req/get/<paramIdWithIndices>  (no value) — asks the console to report
-// the current value. Reply format is undocumented; oscEvent() handles it.
+// the current value once. Reply arrives as /yosc:ok/get/...; oscEvent() handles it.
 function sendGet(paramIdWithIndices) {
 	local.send(REQ + "/get/" + paramIdWithIndices);
+}
+
+// /yosc:req/subscribe/<paramIdWithIndices> — ask the desk to PUSH future changes
+// (as /yosc:notify/set/... or /yosc:okm/set/...). Firmware-confirmed OSC verb, but
+// whether MIXER:Current addresses are subscribable is unverified — experimental.
+function sendSubscribe(paramIdWithIndices) {
+	local.send(REQ + "/subscribe/" + paramIdWithIndices);
+}
+
+function sendUnsubscribe(paramIdWithIndices) {
+	local.send(REQ + "/unsubscribe/" + paramIdWithIndices);
+}
+
+// /yosc:req/keepalive — heartbeat so the desk doesn't drop an idle session (which
+// would kill push feedback). Reply is /yosc:ok/keepalive (swallowed in oscEvent).
+function sendKeepalive() {
+	local.send(REQ + "/keepalive");
 }
 
 // ---- command callbacks (Input Channel) -------------------------------------
@@ -325,41 +383,82 @@ function recallScene(list, number) {
 function sceneInc(list) { local.send(REQ + "/event", "MIXER:Lib/Scene/RecallInc", list); }
 function sceneDec(list) { local.send(REQ + "/event", "MIXER:Lib/Scene/RecallDec", list); }
 
-// Ask the console for the current scene number of a list. Reply is undocumented
-// (watch "Log Unhandled Incoming").
+// Ask the console for the current scene NUMBER of a list. The reply
+// (/yosc:...sscurrentt_ex..., handled in handleSceneReply) then triggers a
+// ssinfot_ex to fetch the name. Arg encoding is best-effort (watch "Log Unhandled
+// Incoming").
 function queryScene(list) { local.send(REQ + "/sscurrentt_ex", list); }
 
-// update() is driven fast while draining a refresh queue, otherwise at the
-// scene-poll interval, otherwise disabled. Chataigne stops periodic updates at
-// rate 0; every update() path is additionally guarded, so a nonzero
-// interpretation of 0 would still be a cheap no-op (#3).
+// Ask for a scene's NAME/comment (firmware: SSINFOT_EX). number is the "x.xx" string.
+function querySceneInfo(list, number) { local.send(REQ + "/ssinfot_ex", list, number); }
+
+// update() is driven fast while draining a paced queue; otherwise it ticks fast
+// enough to service the scene poll and/or keepalive on their own intervals (both
+// are gated on util.getTime(), so the exact tick rate only bounds their jitter).
+// Chataigne stops periodic updates at rate 0; every update() path is additionally
+// guarded, so a nonzero interpretation of 0 would still be a cheap no-op (#3).
 function refreshUpdateRate() {
 	if (getQueuePos < getQueueLen) { script.setUpdateRate(REFRESH_RATE); return; }
-	var s = local.parameters.scenePollSeconds.get();
-	script.setUpdateRate(s > 0 ? (1.0 / s) : 0);
+	var scenePoll = local.parameters.scenePollSeconds.get();
+	var keepalive = local.parameters.keepaliveSeconds.get();
+	// need periodic ticks if either timed task is active; 2 Hz keeps their jitter
+	// well under a second without busy-spinning.
+	script.setUpdateRate((scenePoll > 0 || keepalive > 0) ? 2 : 0);
 }
 
-function update() {
-	if (drainRefreshQueue()) return; // busy refreshing; skip scene poll this tick
-	if (local.parameters.scenePollSeconds.get() <= 0) return;
-	queryScene("scene_a");
-	queryScene("scene_b");
+function update(deltaTime) {
+	if (drainRefreshQueue()) return; // busy draining; skip timed tasks this tick
+
+	var now = util.getTime();
+
+	var keepalive = local.parameters.keepaliveSeconds.get();
+	if (keepalive > 0 && now >= nextKeepalive) {
+		sendKeepalive();
+		nextKeepalive = now + keepalive;
+	}
+
+	if (local.parameters.scenePollSeconds.get() > 0) {
+		queryScene("scene_a");
+		queryScene("scene_b");
+	}
 }
 
-// Send up to GET_BATCH queued gets. Returns true while the queue is draining.
+// Send up to GET_BATCH queued entries via the current queue mode (get / subscribe /
+// unsubscribe). Returns true while the queue is draining.
 function drainRefreshQueue() {
 	if (getQueuePos >= getQueueLen) return false;
 	var end = getQueuePos + GET_BATCH;
 	if (end > getQueueLen) end = getQueueLen;
-	for (; getQueuePos < end; getQueuePos++) sendGet(getQueue[getQueuePos]);
+	for (; getQueuePos < end; getQueuePos++) flushQueueEntry(getQueue[getQueuePos]);
 	if (getQueuePos >= getQueueLen) {
 		getQueue = [];
 		getQueueLen = 0;
 		getQueuePos = 0;
-		refreshUpdateRate(); // restore scene-poll (or idle) rate
-		script.log("DM7 OSC: refresh complete.");
+		refreshUpdateRate(); // restore scene-poll/keepalive (or idle) rate
+		script.log("DM7 OSC: " + getQueueMode + " complete.");
 	}
 	return true;
+}
+
+function flushQueueEntry(entry) {
+	if (getQueueMode == "subscribe") sendSubscribe(entry);
+	else if (getQueueMode == "unsubscribe") sendUnsubscribe(entry);
+	else sendGet(entry);
+}
+
+// Queue one entry per (feedback param, channel) for the given mode, then switch
+// update() to fast-drain. Shared by refreshAllValues() and syncSubscription().
+function queueAllParams(mode) {
+	getQueueMode = mode;
+	getQueue = [];
+	getQueueLen = 0;
+	getQueuePos = 0;
+	for (var k = 0; k < SPEC_KEYS.length; k++) {
+		var s = SPEC[SPEC_KEYS[k]];
+		var n = COUNTS[s.count];
+		for (var i = 1; i <= n; i++) getQueue[getQueueLen++] = s.pid + "/" + i;
+	}
+	refreshUpdateRate(); // switch update() to fast drain
 }
 
 // ---- command callbacks (Query / refresh) -----------------------------------
@@ -372,16 +471,9 @@ function refreshAllValues() {
 		script.log("Refresh: turn on 'Generate Feedback Values' first (nothing to populate).");
 		return;
 	}
-	// Queue the gets; update()/drainRefreshQueue() paces them out (#1).
-	getQueue = [];
-	getQueueLen = 0;
-	getQueuePos = 0;
-	for (var k = 0; k < SPEC_KEYS.length; k++) {
-		var s = SPEC[SPEC_KEYS[k]];
-		var n = COUNTS[s.count];
-		for (var i = 1; i <= n; i++) getQueue[getQueueLen++] = s.pid + "/" + i;
-	}
-	refreshUpdateRate(); // switch update() to fast drain
+	// Snapshot pull: queue a get per value; update()/drainRefreshQueue() paces them
+	// out (#1). Independent of subscribe (which pushes *future* changes).
+	queueAllParams("get");
 	script.log("DM7 OSC: queued " + getQueueLen + " state queries (~" + (GET_BATCH * REFRESH_RATE) + "/s). Enable 'Log Unhandled Incoming' if nothing updates.");
 }
 
@@ -397,56 +489,137 @@ function sendRawGet(paramIdWithIndices) {
 	sendGet(paramIdWithIndices);
 }
 
+// Escape hatches for the (firmware-confirmed but hardware-unverified) push verbs.
+// Handy for trying the ts:-prefixed object addresses seen in firmware by hand.
+function sendRawSubscribe(paramIdWithIndices) {
+	sendSubscribe(paramIdWithIndices);
+}
+
+function sendRawUnsubscribe(paramIdWithIndices) {
+	sendUnsubscribe(paramIdWithIndices);
+}
+
 // ---- incoming OSC (experimental feedback) ----------------------------------
 
 function oscEvent(address, args) {
+	// Keepalive heartbeat reply — swallow.
+	if (startsWith(address, "/yosc:ok/keepalive")) return;
+
+	// Error reply — surface it (if logging is on) and stop.
+	if (startsWith(address, "/yosc:error")) { logUnhandled(address, args); return; }
+
+	// Scene replies (sscurrentt_ex number / ssinfot_ex name) — verb is in the address.
 	if (handleSceneReply(address, args)) return;
 
-	// Best-effort: find the "MIXER:Current" token, treat the trailing numeric
-	// token(s) as X (/Y) indices and the rest as the ParamID. Value is args[0]
-	// if present, else the last address token.
+	// Firmware-confirmed value channels: a get reply and two push forms. The tail
+	// after the prefix is "<ParamID>/<X>[/<Y>]".
+	var rem = afterPrefix(address, "/yosc:ok/get/");
+	if (rem === null) rem = afterPrefix(address, "/yosc:notify/set/");
+	if (rem === null) rem = afterPrefix(address, "/yosc:okm/set/");
+	if (rem !== null) {
+		if (applyParamUpdate(rem, args)) return;
+		logUnhandled(address, args);
+		return;
+	}
+
+	// Last-resort fallback (pre-firmware guess): scan the whole address for a
+	// MIXER:Current token, in case a real desk replies differently than the
+	// firmware format strings suggest. Confirm/prune via "Log Unhandled Incoming".
+	if (applyMixerCurrentScan(address, args)) return;
+	logUnhandled(address, args);
+}
+
+// rem = "<ParamID>/<X>[/<Y>]" (ParamID itself contains slashes). Split off the
+// trailing numeric index token(s), look up the value control by ParamID, set it.
+// Returns true if a matching value was updated.
+function applyParamUpdate(rem, args) {
+	var tokens = rem.split("/");
+	var end = tokens.length - 1;
+	while (end >= 0 && isIntToken(tokens[end])) end--; // tokens[0..end] = ParamID
+	if (end < 0) return false;                          // no ParamID tokens
+	if (end + 1 >= tokens.length) return false;         // no index token
+	var pid = "";
+	for (var j = 0; j <= end; j++) pid += (j > 0 ? "/" : "") + tokens[j];
+	return setValueByPid(pid, tokens[end + 1], args, tokens);
+}
+
+// Fallback for a raw echoed address: find "MIXER:Current" and take the trailing
+// numeric token(s) as X (/Y). (Avoid Array.slice/join/unshift - unsupported here.)
+function applyMixerCurrentScan(address, args) {
 	var tokens = address.split("/");
 	var start = -1;
 	for (var i = 0; i < tokens.length; i++) {
 		if (tokens[i] == "MIXER:Current") { start = i; break; }
 	}
-	if (start < 0) { logUnhandled(address, args); return; }
-
-	// walk back over trailing numeric index tokens; the first one is X.
-	// (avoid Array.slice/join/unshift - unsupported by Chataigne's JS engine)
+	if (start < 0) return false;
 	var end = tokens.length - 1;
 	while (end > start && isIntToken(tokens[end])) end--;
-	if (end + 1 >= tokens.length) { logUnhandled(address, args); return; } // no index token
-	var xToken = tokens[end + 1];
-
+	if (end + 1 >= tokens.length) return false;
 	var pid = "";
 	for (var j = start; j <= end; j++) pid += (j > start ? "/" : "") + tokens[j];
+	return setValueByPid(pid, tokens[end + 1], args, tokens);
+}
 
+// Map a ParamID + X index to its generated value control and set it from the
+// incoming value (args[0] if present, else the last address token). Returns false
+// if the ParamID isn't one we track or the channel is out of range.
+function setValueByPid(pid, xToken, args, tokens) {
 	var key = pidToKey[pid];
-	if (key === undefined) { logUnhandled(address, args); return; }
-
+	if (key === undefined) return false;
 	var refs = valueRefs[key];
 	var target = refs ? refs["" + parseInt(xToken)] : null;
-	if (!target) { logUnhandled(address, args); return; }
-
+	if (!target) return false;
 	var raw = (args && args.length > 0) ? args[0] : tokens[tokens.length - 1];
 	isUpdatingFromOSC = true;
 	target.set(decode(SPEC[key].type, raw));
 	isUpdatingFromOSC = false;
+	return true;
 }
 
-// Best-effort parse of the sscurrentt_ex reply (format undocumented in v1.1.0):
-// assume the list token is echoed in args, followed by number (and maybe name).
+// Scene replies. sscurrentt_ex returns the current NUMBER of a list; the NAME
+// comes from a separate ssinfot_ex query (firmware: SSCURRENTT_EX vs SSINFOT_EX),
+// so on a current-number reply we chain a ssinfot_ex to fill the name. Arg shapes
+// are best-effort (list echoed first, then number, then name) - confirm on hardware.
 function handleSceneReply(address, args) {
-	if (address.split("sscurrentt").length <= 1) return false;
+	var isCurrent = address.split("sscurrentt").length > 1;
+	var isInfo = address.split("ssinfot").length > 1;
+	if (!isCurrent && !isInfo) return false;
 	if (!args || args.length == 0) { logUnhandled(address, args); return true; }
-	var ref = sceneRefs["" + args[0]];
+	var list = "" + args[0];
+	var ref = sceneRefs[list];
 	if (!ref) { logUnhandled(address, args); return true; }
+
 	isUpdatingFromOSC = true;
-	if (args.length > 1) ref.number.set("" + args[1]);
-	if (args.length > 2) ref.name.set("" + args[2]);
-	isUpdatingFromOSC = false;
+	if (isInfo) {
+		// ssinfot_ex: list, number, name[, comment]
+		if (args.length > 1) ref.number.set("" + args[1]);
+		if (args.length > 2) ref.name.set("" + args[2]);
+		isUpdatingFromOSC = false;
+	} else {
+		// sscurrentt_ex: list, number -> record number, then pull the name.
+		var number = (args.length > 1) ? ("" + args[1]) : "";
+		if (number != "") ref.number.set(number);
+		isUpdatingFromOSC = false;
+		if (number != "") querySceneInfo(list, number);
+	}
 	return true;
+}
+
+// ES3-safe string helpers (Chataigne's JS engine lacks String.startsWith/substring).
+function startsWith(s, pre) {
+	if (s.length < pre.length) return false;
+	for (var i = 0; i < pre.length; i++) {
+		if (s.charAt(i) != pre.charAt(i)) return false;
+	}
+	return true;
+}
+
+// Return the part of `address` after `prefix`, or null if it doesn't start with it.
+function afterPrefix(address, prefix) {
+	if (!startsWith(address, prefix)) return null;
+	var out = "";
+	for (var i = prefix.length; i < address.length; i++) out += address.charAt(i);
+	return out;
 }
 
 function isIntToken(t) {

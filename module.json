@@ -4,10 +4,10 @@
   "path": "Hardware",
   "author": "Victor Koeppel",
 
-  "version": "0.2.0",
-  "description": "Control a Yamaha DM7 / DM7 Compact mixing console over OSC (yosc:req protocol). Core live-mixing set: faders, on, pan, sends, labels, DCA & mute groups, scene recall. Bidirectional (feedback experimental).",
-  "url": "https://github.com/vkoeppel/DM7-OSC-Chataigne-Module",
-  "downloadURL": "https://github.com/vkoeppel/DM7-OSC-Chataigne-Module",
+  "version": "0.3.0",
+  "description": "Control a Yamaha DM7 / DM7 Compact mixing console over OSC (yosc:req protocol). Core live-mixing set: faders, on, pan, sends, labels, DCA & mute groups, scene recall. Bidirectional feedback via poll or firmware-derived subscribe/keepalive push (experimental).",
+  "url": "https://github.com/vk0eppel/DM7-OSC-Chataigne-Module",
+  "downloadURL": "https://github.com/vk0eppel/DM7-OSC-Chataigne-Module",
 
   "hasInput": true,
   "hasOutput": true,
@@ -40,17 +40,29 @@
       "default": true,
       "description": "Create a two-way value tree (Level/On/Pan/Name) for the main channel strips. Turn off for a lighter, send-only module."
     },
+    "Use Subscribe (push feedback)": {
+      "type": "Boolean",
+      "default": false,
+      "description": "Ask the desk to PUSH parameter changes (firmware-confirmed OSC subscribe/notify) instead of polling. Requires 'Generate Feedback Values'. Experimental: the subscribe verb is firmware-derived but unverified on hardware - keep 'Log Unhandled Incoming' on. Leave off to use the poll-based Refresh instead."
+    },
+    "Keepalive Seconds": {
+      "type": "Float",
+      "default": 0,
+      "min": 0,
+      "max": 3600,
+      "description": "Send a keepalive heartbeat every N seconds (0 = off) so the desk doesn't drop an idle session and stop pushing feedback. Recommended when 'Use Subscribe' is on (try ~10-30s)."
+    },
     "Log Unhandled Incoming": {
       "type": "Boolean",
       "default": true,
-      "description": "Log any incoming OSC that the parser does not recognise. Useful for reverse-engineering DM7 feedback, which is not documented in the OSC spec."
+      "description": "Log any incoming OSC that the parser does not recognise. Useful for confirming/correcting DM7 feedback: the reply address prefixes (/yosc:ok/get, /yosc:notify/set) are firmware-derived, but the exact argument encoding still needs a real desk."
     },
     "Scene Poll Seconds": {
       "type": "Float",
       "default": 0,
       "min": 0,
       "max": 3600,
-      "description": "Poll the current scene of both lists every N seconds (0 = off). Updates the Scene value holders. Reply format is undocumented, so this is experimental."
+      "description": "Poll the current scene of both lists every N seconds (0 = off). Updates the Scene value holders (number via sscurrentt_ex, name via ssinfot_ex). Arg encoding is best-effort, so this is experimental."
     }
   },
 
@@ -364,6 +376,20 @@
     "Send Raw Get": {
       "menu": "Advanced",
       "callback": "sendRawGet",
+      "parameters": {
+        "Parameter ID (with indices)": { "type": "String", "default": "MIXER:Current/InCh/Fader/Level/1" }
+      }
+    },
+    "Send Raw Subscribe": {
+      "menu": "Advanced",
+      "callback": "sendRawSubscribe",
+      "parameters": {
+        "Parameter ID (with indices)": { "type": "String", "default": "MIXER:Current/InCh/Fader/Level/1" }
+      }
+    },
+    "Send Raw Unsubscribe": {
+      "menu": "Advanced",
+      "callback": "sendRawUnsubscribe",
       "parameters": {
         "Parameter ID (with indices)": { "type": "String", "default": "MIXER:Current/InCh/Fader/Level/1" }
       }

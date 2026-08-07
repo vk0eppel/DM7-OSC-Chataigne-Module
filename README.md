@@ -18,7 +18,7 @@ Copy this folder into `<Documents>/Chataigne/modules/` and add the
 
 Up to 4 OSC controllers can be connected to one DM7.
 
-## What's covered (v0.1 — core live-mixing set)
+## What's covered (v0.3 — core live-mixing set + push feedback)
 
 **Commands** (outgoing control):
 

@@ -32,7 +32,7 @@ Up to 4 OSC controllers can be connected to one DM7.
   feedback tree so the console reports its current state (paced across update
   ticks to avoid flooding the console with UDP)
 - Feedback transport: **poll** (Refresh + optional Scene Poll) *or* firmware-derived
-  **push** — set *Use Subscribe (push feedback)* to have the desk push changes, with
+  **push** — set *Use Subscribe* to have the desk push changes, with
   *Keepalive Seconds* holding the session open (see below)
 - Advanced: **Send Raw Set / Get / Subscribe / Unsubscribe** escape hatches for any
   `MIXER:Current/...` (or `ts:...`) parameter
@@ -72,7 +72,7 @@ in the sibling Yamaha-RCP module:
   `/yosc:ok/keepalive`, `/yosc:error/...`. The parser now dispatches on these
   (with the old `MIXER:Current` scan kept only as a last-resort fallback).
 - The OSC server has **`subscribe` / `unsubscribe` / `keepalive`** — real push
-  feedback, so you don't have to poll. *Use Subscribe (push feedback)* subscribes
+  feedback, so you don't have to poll. *Use Subscribe* subscribes
   the whole value tree; *Keepalive Seconds* pings the desk so it doesn't drop the
   session (the firmware closes idle sessions, which would kill push).
 
@@ -116,6 +116,11 @@ modern features. When editing `DM7-OSC.js`, avoid:
   `slice`, `join`, `map`, `forEach`, `indexOf` — build/parse with manual loops
 
 Safe: `split`, `charAt`, indexing, `parseInt`/`parseFloat`, `Math.*`, `toFixed`.
+
+Also: a module-parameter's `local.parameters.<name>` accessor is derived from its
+**display name** in `module.json` — keep names to plain words (e.g. `Use Subscribe`
+→ `useSubscribe`). Special characters like parentheses change the derived name and
+break the accessor (`Unknown function 'get'`).
 
 ## License
 

@@ -40,7 +40,7 @@
       "default": true,
       "description": "Create a two-way value tree (Level/On/Pan/Name) for the main channel strips. Turn off for a lighter, send-only module."
     },
-    "Use Subscribe (push feedback)": {
+    "Use Subscribe": {
       "type": "Boolean",
       "default": false,
       "description": "Ask the desk to PUSH parameter changes (firmware-confirmed OSC subscribe/notify) instead of polling. Requires 'Generate Feedback Values'. Experimental: the subscribe verb is firmware-derived but unverified on hardware - keep 'Log Unhandled Incoming' on. Leave off to use the poll-based Refresh instead."

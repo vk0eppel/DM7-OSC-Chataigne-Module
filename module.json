@@ -19,10 +19,12 @@
     "oscInput": {
       "localPort": 49900
     },
-    "oscOutput": {
-      "local": false,
-      "remoteHost": "192.168.0.128",
-      "remotePort": 49900
+    "OSC Outputs": {
+      "OSC Output": {
+        "local": false,
+        "remoteHost": "192.168.0.128",
+        "remotePort": 49900
+      }
     }
   },
 

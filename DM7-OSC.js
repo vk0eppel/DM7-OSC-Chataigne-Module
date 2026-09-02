@@ -395,8 +395,54 @@ function muteGroupName(mg, name){ sendSet("MIXER:Current/MuteGrpCtrl/Label/Name/
 // ---- command callbacks (Scene) ---------------------------------------------
 
 function recallScene(list, number) {
-	// number must be sent as "x.xx"
-	local.send(REQ + "/ssrecallt_ex", list, number.toFixed(2));
+	// number must be sent as "x.xx". Neither shortcut works on this engine:
+	// .toFixed() throws "Unknown function 'toFixed'" (confirmed on real DM7
+	// hardware), and naive "n + str" concatenation of a Math.floor/round result
+	// appends a stray ".0" (produced "1.0.0.0" instead of "1.00"). Build the
+	// string one digit at a time instead - see formatSceneNumber/intToStr.
+	local.send(REQ + "/ssrecallt_ex", list, formatSceneNumber(number));
+}
+
+var DIGITS = "0123456789";
+
+// Convert a non-negative integer to a string, one digit at a time (charAt only).
+// The accumulator always keeps a leading "x" guard character (stripped at the
+// end via substring, not "+") so every "+" here has a non-numeric-looking
+// operand. Without the guard, e.g. "9" + "9" can silently become the NUMBER 18
+// instead of the string "99": this engine's "+" prefers numeric addition over
+// string concatenation whenever BOTH operands parse as numbers, unlike spec
+// JS (where "+" concatenates as soon as either side is a string). That bug
+// produced "1.0" instead of "1.00" here the first time this was written
+// without the guard. Neither "" + n nor n.toFixed() are trustworthy either
+// (toFixed throws "Unknown function 'toFixed'" - confirmed on real hardware).
+function intToStr(n) {
+	if (n === 0) return "0";
+	var s = "x";
+	while (n > 0) {
+		var guarded = "x" + DIGITS.charAt(n % 10) + s.substring(1, s.length);
+		s = guarded;
+		n = Math.floor(n / 10);
+	}
+	return s.substring(1, s.length);
+}
+
+// Format a scene number (e.g. 1, 1.5, 499.99) as the "x.xx" string ssrecallt_ex
+// expects. Guarded the same way as intToStr (see its comment) - both the
+// zero-pad and the final whole+frac join concatenate two numeric-looking
+// pieces, which is exactly the shape that triggers this engine's silent
+// numeric-addition coercion.
+function formatSceneNumber(n) {
+	var hundredths = Math.round(n * 100);
+	if (hundredths < 0) hundredths = 0;
+	var whole = Math.floor(hundredths / 100);
+	var frac = hundredths - whole * 100;
+	var fracStr = intToStr(frac);
+	if (fracStr.length < 2) {
+		var padded = "x0" + fracStr;
+		fracStr = padded.substring(1, padded.length);
+	}
+	var full = "x" + intToStr(whole) + "." + fracStr;
+	return full.substring(1, full.length);
 }
 function sceneInc(list) { local.send(REQ + "/event", "MIXER:Lib/Scene/RecallInc", list); }
 function sceneDec(list) { local.send(REQ + "/event", "MIXER:Lib/Scene/RecallDec", list); }

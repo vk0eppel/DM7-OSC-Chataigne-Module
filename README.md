@@ -60,6 +60,31 @@ Not yet in scope: EQ/dynamics, monitor, 5.1 surround, cue, channel links.
 Address grammar: `/yosc:req/set/<ParamID>/<X>[/<Y>] <value>` — e.g.
 `/yosc:req/set/MIXER:Current/InCh/Fader/Level/61 -2000`.
 
+## ⚠️ Feedback: blocked by a UDP reply-port mismatch (2026-09-02 DM7 capture)
+
+**Hardware finding (packet capture, real DM7):** outgoing control works, but
+**incoming feedback never reaches Chataigne** — not a parser bug, a *port* problem.
+
+The DM7 sends every reply/push back to the **UDP source port of the request**, not
+to a fixed port. Chataigne's OSC *output* opens its own socket on an ephemeral
+source port (e.g. `49626`), while its OSC *input* listens on `49900`. So the desk
+replies to `49626` and the input on `49900` never hears them. Setting "Remote/Out
+Port = 49900" does **not** fix this — that's the *destination*; the *source* port is
+what the desk replies to, and it's auto-assigned.
+
+For two-way OSC to work, Chataigne must **send its requests from the same port it
+listens on (49900)**. If your Chataigne build has no way to bind the OSC output's
+source port to the input port, **YOSC feedback cannot work** through its split
+in/out sockets — use the sibling **Yamaha RCP module (TCP 49280)** for DM7 feedback
+instead (confirmed working on the same desk); keep OSC for send-only control.
+
+Also confirmed from the capture, for when the port issue is solved:
+- The desk **does** answer `get`s: `/yosc:ok/get/MIXER:Current/InCh/Fader/Level/N`
+  with an `int32` (`,i`) arg (`-32768` = −∞), matching the parser's prefix dispatch.
+- Replies arrive wrapped in an **OSC `#bundle`** (multiple `/yosc:ok/get/...`
+  messages per packet) — verify Chataigne unpacks bundles into `oscEvent` once
+  replies actually reach the listen port.
+
 ## ⚠️ Feedback is experimental (but firmware-informed)
 
 The public v1.1.0 OSC spec **does not document the response/feedback format**.
@@ -115,14 +140,34 @@ modern features. When editing `DM7-OSC.js`, avoid:
 - chained-bracket assignment (`a[k][i] = x`) — assign the inner object to a
   local var first and use string index keys
 - regex literals / `.test()`, and ES5 array/string helpers such as `unshift`,
-  `slice`, `join`, `map`, `forEach`, `indexOf` — build/parse with manual loops
+  `slice`, `join`, `map`, `forEach`, `indexOf` — build/parse with manual loops.
+  `indexOf` doesn't throw here; it silently returns a wrong result (confirmed
+  on the sibling RCP module: `String.indexOf()` calls that matched under Node
+  quietly returned false on real hardware, with no error logged - the harder
+  failure mode to catch)
+- `Number.prototype.toFixed()` — throws `Unknown function 'toFixed'` (confirmed
+  on real DM7 hardware via `Recall Scene`/`ssrecallt_ex`, which needs an
+  "x.xx" string). Build fixed-point strings by hand instead - see
+  `formatSceneNumber`/`intToStr` in `DM7-OSC.js` (digit-by-digit via `charAt`,
+  since plain `n + string` concatenation of a `Math.floor`/`round` result also
+  isn't trustworthy here - it appended a stray `.0`, e.g. `"1.00"` came out as
+  `"1.0.0.0"`)
 
-Safe: `split`, `charAt`, indexing, `parseInt`/`parseFloat`, `Math.*`, `toFixed`.
+Safe: `split`, `charAt`, indexing, `parseInt`/`parseFloat`, `Math.*`.
 
 Also: a module-parameter's `local.parameters.<name>` accessor is derived from its
 **display name** in `module.json` — keep names to plain words (e.g. `Use Subscribe`
 → `useSubscribe`). Special characters like parentheses change the derived name and
 break the accessor (`Unknown function 'get'`).
+
+**`module.json` edits need a full module remove + re-add — not a reload.** Chataigne
+scans a module's command/parameter definitions once, at registration. Editing the
+`.js` hot-reloads; editing `module.json` (new/renamed commands or parameters) does
+**not** take effect on a script reload *or* a project reload — the running module
+keeps its stale command list. Symptom (seen on real hardware, DM7 + CL5): a
+new/edited command produces **zero output** when triggered — no send, no script
+error, nothing. If that happens, **delete the module from the project and add it
+fresh** before suspecting the JS. (Bit us on both modules the same day.)
 
 ## License
 

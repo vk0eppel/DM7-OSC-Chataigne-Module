@@ -1,11 +1,28 @@
 # Next Field-Test Day — TODO
 
 Covers **both** modules (DM7-OSC over YOSC/49900, Yamaha-RCP over TCP/49280).
-Built from the 2026-09-02 CL5 + DM7 session. Most code fixes from that day are
-**unverified on hardware** — this day is mostly *confirm the fixes live* plus two
-real blockers. Each item is **Do → Record**.
+Built from the 2026-09-02 CL5 + DM7 session; current as of 2026-09-13. Most code
+fixes from that day are still **unverified on hardware** — this day is mostly
+*confirm the fixes live* plus two real blockers. Each item is **Do → Record**.
+
+**One change since last session:** commit `b3bbb3c` (2026-09-03) fixed the OSC
+**output default** — it used the flat `oscOutput` key Chataigne ignores, so a fresh
+add silently fell back to remote port **9000** and dropped `remoteHost`. It now uses
+the `OSC Outputs > OSC Output` nesting, so console IP + **remote port 49900** apply
+on re-add. This fixes the *destination* only; the 49900 **source-port** blocker
+(Priority 1) is unchanged.
 
 ## 0. Prep (do first, every session)
+
+> **Bench first, desk second.** Before the field day, run the mock desk
+> (`node tools/dm7-osc-mock.js`) — a dependency-free DM7 YOSC responder built from
+> the firmware RE grammar. It answers `get`/scene/keepalive/subscribe with the real
+> reply prefixes and `#bundle` wrapping, and by default **replies to the request's
+> source port**, reproducing the Priority-1 delivery blocker — so you can validate
+> the UDP-proxy fallback on the bench. Flags: `REPLY_TO_FIXED=1` (simulate a
+> fixed-port desk), `RES_MEM_PAIR=1` (test the Res/Mem parse), and stdin
+> `push <ParamID/X> <value>` to simulate a desk-side change to subscribers.
+
 
 - [ ] **Load both modules FRESH** — remove from the project and re-add, do NOT
       just reload. `module.json` command/param changes only apply on re-add.
@@ -17,6 +34,10 @@ real blockers. Each item is **Do → Record**.
       transport logger) — that's where script output/errors show. Keep `DEBUG=false`
       unless chasing something.
 - [ ] DM7-OSC module: **Log Unhandled Incoming = on**.
+- [ ] DM7-OSC module: after the fresh re-add, **verify the OSC Output pane** shows
+      the console IP and **remote port 49900** — NOT the old `9000` fallback. (This
+      is the `b3bbb3c` default fix; if it still reads 9000, the module.json edit
+      didn't apply → you didn't fully remove+re-add.)
 
 ---
 
@@ -26,17 +47,69 @@ The DM7 replies to the request's **UDP source port** (ephemeral, e.g. 49626), bu
 Chataigne's OSC input listens on 49900 — so no reply is ever received. Feedback
 (values, scene query, push) is fully blocked until this is solved.
 
-- [ ] In the module's **OSC Output** settings, look for any option to bind/reuse the
-      **source (local) port** — "Local Port", "Reuse input port", a `local`
-      checkbox, etc. Goal: make Chataigne **send from 49900** (the listen port).
-      **Record:** exactly what output options exist (screenshot).
-- [ ] If found: set source port = 49900, Sync, watch Wireshark for replies now
-      arriving at **49900**, and confirm the **value tree populates**.
-      **Record:** does the tree fill? (Desk replies arrive as OSC `#bundle` of
-      `/yosc:ok/get/…` — confirm Chataigne unpacks bundles into `oscEvent`.)
-- [ ] If NOT found: try a newer Chataigne build, or accept that **YOSC feedback is
-      impossible** through split in/out sockets → **RCP (49280) is the DM7 feedback
-      path** (already works). Document the verdict either way.
+*Narrowed since last session:* `b3bbb3c` fixed the **destination** (remote port is
+now 49900, not the 9000 fallback). The remaining blocker is purely the **source
+(local) port** of the output socket — Chataigne auto-assigns it, so replies still
+land on an ephemeral port the listener never sees.
+
+**Firmware RE verdict — this is a CLIENT-side problem, not a desk-side one. Do NOT
+spend field time hunting for a reply-port option on the DM7.** Static RE of firmware
+V1.75 (`YamDeskEmu/firmware/`) shows the YOSC grammar carries **no reply-port field**
+in any handshake — subscribe/keepalive/identify/devinfo formats hold only a session
+token `%s` (`firmware/rcp/dm7_yosc.txt`), and the decomp has no `sockaddr`/`sin_port`/
+`sendto` override. Replying to the request's source port is standard UDP behaviour;
+there is no hidden "send notifies to port X" mode to enable. The fix must be made on
+Chataigne's side.
+
+**Chataigne can't bind one socket for both send+receive — proxy is THE path, not a
+fallback.** Confirmed 2026-09-13 by inspecting installed community modules + JUCE:
+- The QLab "OSC Advanced" module (the one with the "input port" field) is a plain
+  `type:OSC` module — its "input port" is just the standard **OSC Input localPort**,
+  the same thing we set to 49900. It gets feedback because **QLab targets a fixed
+  reply port (53001)**, not because of that field. Every feedback-capable community
+  module works this way: QLab, grandMA3, Reaper, M32, L-ISA all make the **device
+  send to a configured local port** (L-ISA literally sends `/ext/device/N/register
+  ip port`). The DM7 has no such register/target — it replies to source.
+- The `local` checkbox and `listenToFeedback` OSC-Output options are **not** a
+  source-port bind (L-ISA uses `local:true` but still registers a port; QLab uses
+  `local:false`). Binding send+receive to one socket needs `SO_REUSEADDR`, which
+  **JUCE's OSC API does not expose** — so no Chataigne build has this knob.
+  → A 2-min sanity check of the OSC Output options is fine, but expect nothing.
+
+- [ ] **UDP relay/proxy (the fix).** One small process (Node/Python) owns a single
+      socket bound to `:49900`: it forwards Chataigne's outgoing OSC to `desk:49900`
+      **from** 49900 (so the desk replies to 49900), and relays those replies to a
+      Chataigne **input on a different local port** (e.g. 49901). Chataigne never
+      binds 49900 — the proxy does — so the split-socket problem disappears. Point
+      OSC Output at the proxy; set OSC Input = 49901. Bench-test it first against
+      `tools/dm7-osc-mock.js` (default mode reproduces the reply-to-source blocker).
+      **Record:** does the value tree populate through the proxy?
+- [ ] If you skip the proxy: **RCP (49280) is the DM7 feedback path** (already
+      works). Document which path this rig will use.
+
+*RE still pays off for feedback content once delivery is fixed:* confirmed reply
+prefixes (`/yosc:ok/get`, `/yosc:notify/set`, `/yosc:okm/set`, `/yosc:ok/keepalive`,
+`/yosc:error`), `#bundle` wrapping, and the subscribe/keepalive verbs all parse
+already — the blocker was only delivery, never parsing.
+
+### Once delivery works — push/subscribe likely needs a DIFFERENT address family
+
+**RE finding (act on this before writing off push):** the module subscribes on
+`/yosc:req/subscribe/MIXER:Current/…` (`DM7-OSC.js` `sendSubscribe`), but **every**
+`subscribe` format string in firmware V1.75 is **`ts:`-prefixed** — e.g.
+`/yosc:%s/subscribe/ts:3DRev/MasterFader/Level`, `ts:Show/On`,
+`ts:Scene/Status/EnableSceneView`, `ts:@LogicalPositionControl`
+(`YamDeskEmu/firmware/rcp/dm7_yosc.txt`). There is **no** `subscribe/MIXER:Current`
+form in the firmware. So SUBSCRIBE probably only works on the **`ts:` editor-object
+address family**, not the `MIXER:Current` namespace we get/set on.
+
+- [ ] Once replies are arriving (proxy or source-port bind), test push two ways with
+      **Send Raw Subscribe**: (a) a `MIXER:Current/…` address, (b) a `ts:…` address
+      from the firmware list. **Record:** which one makes the desk push
+      `/yosc:notify/set` (or `/yosc:okm/set`) on a desk-side change?
+- [ ] If only `ts:` works, poll (`get`) stays the feedback mechanism for the
+      `MIXER:Current` tree, and push would require a second `ts:`-addressed path.
+      **Record the verdict** so we either wire up `ts:` subscribe or drop push.
 
 ---
 

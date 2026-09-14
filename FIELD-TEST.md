@@ -94,6 +94,10 @@ replies from a different one.
       **Record:** does the desk push changes without polling? Session stays alive across
       the interval? Capture a `/yosc:ok/keepalive` reply. Are `MIXER:Current/…`
       addresses subscribable, or only `ts:`-prefixed object addresses?
+      **Firmware RE says the latter:** every `subscribe` format string in V1.75 is
+      `ts:`-prefixed (`YamDeskEmu/firmware/rcp/dm7_yosc.txt`), none on `MIXER:Current`.
+      So try **Send Raw Subscribe** with a `ts:…` address (e.g.
+      `ts:3DRev/MasterFader/Level`) vs a `MIXER:Current/…` one and see which pushes.
 - [ ] **Scene chain.** Recall a scene.
       **Record:** `sscurrentt_ex` reply (number) + auto-chained `ssinfot_ex` reply
       (name), both raw arg shapes. Confirm `Scene > A/B > Number / Name` fills.

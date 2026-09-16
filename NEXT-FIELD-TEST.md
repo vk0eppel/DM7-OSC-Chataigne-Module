@@ -125,6 +125,13 @@ not the `"1.00"` **string** the desk wants.
 - [ ] If it's a float/int: the fix is forcing a **string-typed OSC arg** (see the
       L-ISA module's per-type `sendS`/`sendF` pattern for how Chataigne coerces),
       not JS string-building. Bring that finding back.
+- [x] **RCP Scene Inc/Dec CONFIRMED (DM7, 2026-09-14):** `Scene Recall Inc`/`Dec` send
+      `event MIXER:Lib/Scene/RecallInc`/`RecallDec scene_a` and the desk steps up/down.
+      (Long red herring first: the Inc command looked "dead" for ~20 exchanges — root
+      cause was Chataigne running a **cached script**. Editing `Yam-RCP.js` needs the
+      module's **Reload Script** action; remove+re-add only reloads `module.json` and
+      keeps the old compiled `.js`, so its callbacks can point at functions the stale
+      script lacks. See gotchas below.)
 - [ ] Also test **Scene Inc/Dec** and **Query Current Scene** (the latter only works
       once Priority 1's port issue is solved — its reply is feedback).
 
@@ -136,16 +143,21 @@ These were fixed + harness-verified but not seen live on a desk. Quick to confir
 
 - [ ] **Scene recall + `Scene > Current`** — CL/QL (integer) and DM7 (`N.MM`).
       **Record:** does Current populate and track desk-side recalls?
-- [ ] **DM7 scene number + name** (the re-query fix) — after a desk recall,
+- [x] **DM7 scene number + name** (the re-query fix) — after a desk recall,
       `Scene > Current` should read **`1.00`** (not `0`) and `Scene > Name` should
       show the scene's name.
       **Record:** the `sscurrentt_ex`/`ssinfot_ex` exchange from the logger.
+      **CONFIRMED 2026-09-14:** recalling from the desk surface correctly updates
+      both `Scene > Current` and `Scene > Name` on real DM7 hardware.
 - [ ] **CL/QL scene name** — `Scene > Name` should now fill (module now actually
       sends `ssinfo_ex` post-`indexOf` fix; never sent it before).
       **Record:** the `OK ssinfo_ex … "Name" …` reply (never captured yet).
-- [ ] **On-echo gone** — toggle a channel On from the **desk**; the module should NOT
+- [x] **On-echo gone** — toggle a channel On from the **desk**; the module should NOT
       bounce a `set` back. Grab a short capture to confirm (pre-fix captures still
       showed the echo).
+      **CONFIRMED 2026-09-14:** Chataigne logger shows `Message received: NOTIFY set …`
+      lines only, no matching `Message sent` echo, across several rapid On/Off toggles
+      on real DM7 hardware. Also confirms NOTIFY arrives with no subscribe ever sent.
 - [ ] **InvalidArgument spam gone** — DM7 sync should no longer flood the logger with
       `ERROR get InvalidArgument` warnings (now DEBUG-only).
 
@@ -156,16 +168,40 @@ These were fixed + harness-verified but not seen live on a desk. Quick to confir
 - [ ] **Keep-Alive need** — leave at `0`; only relevant if an idle RCP socket drops
       and silently kills NOTIFY feedback. Test by idling a few minutes then making a
       desk change.
-- [ ] **DM7 HA gain** — confirm `InCh/Port/HA/Gain` only answers patched (head-amp)
-      channels, values sane (scale 1 = dB). (Expected per last session.)
+- [~] **DM7 HA gain** — `InCh/Port/HA/Gain` answers only patched (head-amp) channels
+      (unpatched → `ERROR … InvalidArgument`) — **confirmed** from the 2026-09-14 Sync
+      capture. **SCALE CORRECTED:** the desk returns dB×100 (raw −600 = −6.00 dB, raw
+      100 = +1.00 dB), i.e. **scale 100** like CL/QL — NOT scale 1 as the prminfo dump
+      read. The RCP module's `DM7_HAGAIN` was fixed to `min -600 / max 6600 / scale 100`
+      (the old scale 1 also made `Set HA Gain` send ≈1/100th of the requested dB).
+      **Still to confirm on desk — the WRITE path:** trigger `Set HA Gain` with a known
+      value (e.g. +6 dB), capture the wire (`set …/HA/Gain <ch> 0 600`), and verify the
+      desk's channel gain actually reads +6 dB. (Read path already proven by the capture.)
 - [ ] Capture the **DM7 `devinfo productname`** string (for `EXPECTED_PRODUCT` /
       the mock) if not already recorded.
+- [ ] **DM7 colour palette — capture the full 11 WIRE names.** The 2026-09-14 Sync showed
+      `Label/Color` wire values that DON'T match the RCP module's `DM7_COLORS`: the desk
+      sends `"SkyBlue"` (module: `Cyan`), `"LightGreen"` (module: `LtGreen`), `"OFF"`
+      (module: `Off`). Read is unaffected (colour is a String param), but **`Set Channel
+      Color` sends the module's names → a DM7 rejects the mismatched ones.** Only 9 of 11
+      wire names seen (Blue, Orange, Yellow, Purple, Red, White, SkyBlue, LightGreen, OFF).
+      **Do:** colour channels through ALL 11 desk colours and capture each `Label/Color`
+      wire string (esp. the two the module calls `Magenta` and `Green`). **Record** the
+      exact 11 strings, then fix `DM7_COLORS` + the `Set Channel Color` enum in module.json.
 
 ---
 
 ## Notes / gotchas to remember (from last time)
 
 - `module.json` edits ⇒ **remove + re-add the module** (not reload).
+- **`.js` (script) edits ⇒ use the module's "Reload Script" action.** Remove+re-add
+  reloads `module.json` but keeps a **cached compiled script**, so `.js` changes are
+  ignored — and a `module.json` callback can then reference a function the stale script
+  doesn't have, giving a **silently dead command** (no send, no error, no packet on the
+  wire). Confirmed 2026-09-14 with a `script.log` build-marker that only appeared after
+  "Reload Script". If in doubt, add a temp `script.log("build X")` in `init()`/a command
+  and confirm it prints. NB remove+re-add also **resets module params to defaults**
+  (host reverts to `127.0.0.1`), so re-enter the desk IP:port afterward.
 - A **`/` in a command parameter name** silently kills that command.
 - Engine quirks: `String.indexOf()` **silently returns wrong** results;
   `.toFixed()` **throws**; `n + "str"` concat of a `Math.*` result can coerce to

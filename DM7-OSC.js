@@ -126,12 +126,44 @@ var subscriptionActive = false;
 // ---- lifecycle -------------------------------------------------------------
 
 function init() {
-	refreshCounts();
-	buildPidIndex();
-	generateValues();
+	buildAll();
 	syncSubscription(); // subscribe now if push feedback + value tree are both on
 	refreshUpdateRate();
 	script.log("DM7 OSC module ready (" + local.parameters.consoleModel.get() + ", " + COUNTS.inputs + " inputs). Set the OSC output remoteHost to the console IP, port 49900.");
+}
+
+// refreshCounts + buildPidIndex + generateValues as one unit, tracking readiness.
+//
+// Chataigne does NOT reliably call init() when a saved project is re-opened: it
+// restores the value tree from the .noisette (so the user still SEES it) but does
+// not re-run the module script's init(). When that happens, pidToKey/valueRefs stay
+// empty and incoming /yosc:ok/get replies have nothing to match against — every one
+// logs as "Unhandled OSC in" even though the desk replied correctly. (Confirmed
+// against a real DM7 on 2026-09-16: 973 replies arrived, ALL unhandled, with no
+// script error and no "module ready" log — i.e. init() never ran that session.)
+//
+// ensureBuilt() (called from every entry point that needs the maps) rebuilds them
+// on first use, so a restored session routes feedback without a manual script reload.
+var moduleReady = false;
+var building = false;
+var diagShown = 0; // routing-miss diagnostics emitted since the last (re)build
+
+function buildAll() {
+	building = true; // suppress outgoing sends while addValueParam fires moduleValueChanged
+	refreshCounts();
+	buildPidIndex();
+	generateValues();
+	building = false;
+	moduleReady = true;
+	diagShown = 0; // re-arm the routing-miss diagnostic for this freshly-built tree
+}
+
+function ensureBuilt() {
+	if (moduleReady) return;
+	buildAll();
+	syncSubscription();
+	refreshUpdateRate();
+	script.log("DM7 OSC: built value tree on demand (init was not called this session).");
 }
 
 function refreshCounts() {
@@ -148,11 +180,10 @@ function buildPidIndex() {
 
 function moduleParameterChanged(param) {
 	if (param.name == "consoleModel") {
-		refreshCounts();
-		generateValues();
+		buildAll();
 		syncSubscription();
 	} else if (param.name == "generateFeedbackValues") {
-		generateValues();
+		buildAll();
 		syncSubscription();
 	} else if (param.name == "useSubscribe") {
 		syncSubscription();
@@ -245,13 +276,14 @@ function addValueParam(container, name, type) {
 	if (type == "level")  return container.addFloatParameter(name, "dB", 0, MIN_DB, 10);
 	if (type == "pan")    return container.addIntParameter(name, "L63..R63", 0, -63, 63);
 	if (type == "on")     return container.addBoolParameter(name, "", false);
-	if (type == "color")  return container.addStringParameter(name, "Blue/Orange/Yellow/Purple/Cyan/Magenta/Red/Green/LtGreen/White/Off", "Blue");
+	if (type == "color")  return container.addStringParameter(name, "Blue/Orange/Yellow/Purple/SkyBlue/Pink/Red/Green/LightGreen/White/Off (desk may report Off as OFF)", "Blue");
 	if (type == "hagain") return container.addIntParameter(name, "dB (-6..66)", 0, HA_MIN, HA_MAX);
 	return container.addStringParameter(name, "", ""); // name
 }
 
 // A generated value changed (from the UI, a mapping, or OSC feedback).
 function moduleValueChanged(value) {
+	if (building) return;          // params being (re)created; not a user edit
 	if (isUpdatingFromOSC) return; // don't echo feedback back to the console
 	var d = descByAddr[value.getControlAddress()];
 	if (!d) return;
@@ -531,6 +563,7 @@ function queueAllParams(mode) {
 // reports its current state. This is a burst of messages (one per channel per
 // value type); replies land in oscEvent() once the reply format is confirmed.
 function refreshAllValues() {
+	ensureBuilt(); // build the value tree/maps if init() was skipped on project load
 	if (!local.parameters.generateFeedbackValues.get()) {
 		script.log("Refresh: turn on 'Generate Feedback Values' first (nothing to populate).");
 		return;
@@ -538,7 +571,11 @@ function refreshAllValues() {
 	// Snapshot pull: queue a get per value; update()/drainRefreshQueue() paces them
 	// out (#1). Independent of subscribe (which pushes *future* changes).
 	queueAllParams("get");
-	script.log("DM7 OSC: queued " + getQueueLen + " state queries (~" + (GET_BATCH * REFRESH_RATE) + "/s). Enable 'Log Unhandled Incoming' if nothing updates.");
+	// Also pull the current scene of both lists so the Scene holders fill in from one
+	// action (the strip gets don't cover Scene). Replies land in handleSceneReply().
+	queryScene("scene_a");
+	queryScene("scene_b");
+	script.log("DM7 OSC: queued " + getQueueLen + " state queries (~" + (GET_BATCH * REFRESH_RATE) + "/s) + scene query. Enable 'Log Unhandled Incoming' if nothing updates.");
 }
 
 // ---- command callbacks (Advanced) ------------------------------------------
@@ -566,6 +603,8 @@ function sendRawUnsubscribe(paramIdWithIndices) {
 // ---- incoming OSC (experimental feedback) ----------------------------------
 
 function oscEvent(address, args) {
+	ensureBuilt(); // route against valid maps even if init() didn't run this session
+
 	// Keepalive heartbeat reply — swallow.
 	if (startsWith(address, "/yosc:ok/keepalive")) return;
 
@@ -629,10 +668,10 @@ function applyMixerCurrentScan(address, args) {
 // if the ParamID isn't one we track or the channel is out of range.
 function setValueByPid(pid, xToken, args, tokens) {
 	var key = pidToKey[pid];
-	if (key === undefined) return false;
+	if (key === undefined) { diagMiss("no key for ParamID '" + pid + "' (pidToKey empty? " + (pidToKey["MIXER:Current/InCh/Fader/Level"] === undefined) + ")"); return false; }
 	var refs = valueRefs[key];
 	var target = refs ? refs["" + parseInt(xToken)] : null;
-	if (!target) return false;
+	if (!target) { diagMiss("key '" + key + "' has no channel '" + xToken + "' (refs " + (refs ? "exists" : "MISSING") + ")"); return false; }
 	var raw = (args && args.length > 0) ? args[0] : tokens[tokens.length - 1];
 	isUpdatingFromOSC = true;
 	target.set(decode(SPEC[key].type, raw));
@@ -645,8 +684,14 @@ function setValueByPid(pid, xToken, args, tokens) {
 // so on a current-number reply we chain a ssinfot_ex to fill the name. Arg shapes
 // are best-effort (list echoed first, then number, then name) - confirm on hardware.
 function handleSceneReply(address, args) {
-	var isCurrent = address.split("sscurrentt").length > 1;
-	var isInfo = address.split("ssinfot").length > 1;
+	// Do NOT use address.split("sscurrentt"): this engine's String.split() treats a
+	// MULTI-character separator as a SET of characters, so split("sscurrentt") splits
+	// on any of s/c/u/r/e/n/t and matched virtually every address — which made this
+	// function claim every /yosc:ok/get value reply as a scene reply and swallow it
+	// (logged "Unhandled", returned true) before applyParamUpdate ever ran. Single-char
+	// separators like split("/") are unaffected. Use containsSub() for substring tests.
+	var isCurrent = containsSub(address, "sscurrentt");
+	var isInfo = containsSub(address, "ssinfot");
 	if (!isCurrent && !isInfo) return false;
 	if (!args || args.length == 0) { logUnhandled(address, args); return true; }
 	var list = "" + args[0];
@@ -655,18 +700,38 @@ function handleSceneReply(address, args) {
 
 	isUpdatingFromOSC = true;
 	if (isInfo) {
-		// ssinfot_ex: list, number, name[, comment]
+		// ssinfot_ex reply (hardware-confirmed 2026-09-17):
+		//   [0]=list  [1]=number  [2]=number(dup)  [3]=name  [4]=comment  [5]=store type
+		//   e.g. scene_a  3.00  3.00  "Base Main House3"  "26-27"  user
 		if (args.length > 1) ref.number.set("" + args[1]);
-		if (args.length > 2) ref.name.set("" + args[2]);
+		if (args.length > 3) ref.name.set("" + args[3]);
 		isUpdatingFromOSC = false;
 	} else {
-		// sscurrentt_ex: list, number -> record number, then pull the name.
+		// sscurrentt_ex reply (hardware-confirmed): [0]=list [1]=number [2]=modified-flag
+		//   e.g. scene_a  3.00  modified
+		// Record the number, then chain a ssinfot_ex to fetch the scene name.
 		var number = (args.length > 1) ? ("" + args[1]) : "";
 		if (number != "") ref.number.set(number);
 		isUpdatingFromOSC = false;
 		if (number != "") querySceneInfo(list, number);
 	}
 	return true;
+}
+
+// True if `sub` occurs in `s` as a contiguous substring. Hand-rolled (charAt only)
+// because this engine's String.split() splits on a multi-char separator as a CHARACTER
+// SET, and String.indexOf isn't trusted here — so neither is safe for substring tests.
+function containsSub(s, sub) {
+	if (sub.length == 0) return true;
+	var last = s.length - sub.length;
+	for (var i = 0; i <= last; i++) {
+		var match = true;
+		for (var j = 0; j < sub.length; j++) {
+			if (s.charAt(i + j) != sub.charAt(j)) { match = false; break; }
+		}
+		if (match) return true;
+	}
+	return false;
 }
 
 // ES3-safe string helpers (Chataigne's JS engine lacks String.startsWith/substring).
@@ -686,14 +751,31 @@ function afterPrefix(address, prefix) {
 	return out;
 }
 
+// Digit test via object-property lookup. Do NOT use ch < "0" || ch > "9": this
+// engine's relational operators coerce string operands to numbers, so "L" < "0"
+// becomes NaN < 0 (false) and the range check silently passes for letters — which
+// made isIntToken() return true for "Level"/"InCh"/"MIXER:Current", so
+// applyParamUpdate() peeled the entire address as "index" tokens and NEVER routed
+// any feedback reply. Property access is immune to that coercion.
+var DIGIT_SET = { "0": 1, "1": 1, "2": 1, "3": 1, "4": 1, "5": 1, "6": 1, "7": 1, "8": 1, "9": 1 };
+
 function isIntToken(t) {
 	if (t.length == 0) return false;
 	for (var i = 0; i < t.length; i++) {
-		var ch = t.charAt(i);
-		if (i == 0 && ch == "-") continue;
-		if (ch < "0" || ch > "9") return false;
+		if (DIGIT_SET[t.charAt(i)] !== 1) return false; // any non-digit char => not an index token
 	}
-	return t != "-";
+	return true; // address index tokens are always non-negative integers
+}
+
+// Explain WHY a value-channel reply couldn't be routed (empty maps vs unknown
+// ParamID vs out-of-range channel). Self-limited to a few lines per (re)build so a
+// full 1092-reply refresh can't flood the log; re-armed in buildAll(). Gated on the
+// same "Log Unhandled Incoming" toggle as logUnhandled.
+function diagMiss(msg) {
+	if (!local.parameters.logUnhandledIncoming.get()) return;
+	if (diagShown >= 3) return;
+	diagShown++;
+	script.log("DM7 OSC routing miss: " + msg + " [moduleReady=" + moduleReady + "]");
 }
 
 function logUnhandled(address, args) {

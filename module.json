@@ -114,7 +114,7 @@
       "callback": "inColor",
       "parameters": {
         "Channel": { "type": "Integer", "min": 1, "max": 120, "default": 1 },
-        "Color": { "type": "Enum", "options": { "Blue": "Blue", "Orange": "Orange", "Yellow": "Yellow", "Purple": "Purple", "Cyan": "Cyan", "Magenta": "Magenta", "Red": "Red", "Green": "Green", "LtGreen": "LtGreen", "White": "White", "Off": "Off" }, "default": "Blue" }
+        "Color": { "type": "Enum", "options": { "Blue": "Blue", "Orange": "Orange", "Yellow": "Yellow", "Purple": "Purple", "SkyBlue": "SkyBlue", "Pink": "Pink", "Red": "Red", "Green": "Green", "LightGreen": "LightGreen", "White": "White", "Off": "Off" }, "default": "Blue" }
       }
     },
     "Input HA Gain": {
@@ -209,7 +209,7 @@
       "callback": "mixColor",
       "parameters": {
         "Mix": { "type": "Integer", "min": 1, "max": 48, "default": 1 },
-        "Color": { "type": "Enum", "options": { "Blue": "Blue", "Orange": "Orange", "Yellow": "Yellow", "Purple": "Purple", "Cyan": "Cyan", "Magenta": "Magenta", "Red": "Red", "Green": "Green", "LtGreen": "LtGreen", "White": "White", "Off": "Off" }, "default": "Blue" }
+        "Color": { "type": "Enum", "options": { "Blue": "Blue", "Orange": "Orange", "Yellow": "Yellow", "Purple": "Purple", "SkyBlue": "SkyBlue", "Pink": "Pink", "Red": "Red", "Green": "Green", "LightGreen": "LightGreen", "White": "White", "Off": "Off" }, "default": "Blue" }
       }
     },
     "Mix to Matrix Level": {
@@ -260,7 +260,7 @@
       "callback": "mtrxColor",
       "parameters": {
         "Matrix": { "type": "Integer", "min": 1, "max": 12, "default": 1 },
-        "Color": { "type": "Enum", "options": { "Blue": "Blue", "Orange": "Orange", "Yellow": "Yellow", "Purple": "Purple", "Cyan": "Cyan", "Magenta": "Magenta", "Red": "Red", "Green": "Green", "LtGreen": "LtGreen", "White": "White", "Off": "Off" }, "default": "Blue" }
+        "Color": { "type": "Enum", "options": { "Blue": "Blue", "Orange": "Orange", "Yellow": "Yellow", "Purple": "Purple", "SkyBlue": "SkyBlue", "Pink": "Pink", "Red": "Red", "Green": "Green", "LightGreen": "LightGreen", "White": "White", "Off": "Off" }, "default": "Blue" }
       }
     },
 
@@ -318,7 +318,7 @@
       "callback": "dcaColor",
       "parameters": {
         "DCA": { "type": "Integer", "min": 1, "max": 24, "default": 1 },
-        "Color": { "type": "Enum", "options": { "Blue": "Blue", "Orange": "Orange", "Yellow": "Yellow", "Purple": "Purple", "Cyan": "Cyan", "Magenta": "Magenta", "Red": "Red", "Green": "Green", "LtGreen": "LtGreen", "White": "White", "Off": "Off" }, "default": "Blue" }
+        "Color": { "type": "Enum", "options": { "Blue": "Blue", "Orange": "Orange", "Yellow": "Yellow", "Purple": "Purple", "SkyBlue": "SkyBlue", "Pink": "Pink", "Red": "Red", "Green": "Green", "LightGreen": "LightGreen", "White": "White", "Off": "Off" }, "default": "Blue" }
       }
     },
 

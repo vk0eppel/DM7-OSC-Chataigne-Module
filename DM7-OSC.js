@@ -17,21 +17,24 @@
  * The console listens on UDP 49900. Set the module's OSC output remoteHost to
  * the console's "For Mixer Control" IP (SETUP > NETWORK).
  *
- * FEEDBACK: The public v1.1.0 OSC spec does NOT document the response format,
- * but reverse-engineering the DM7 firmware (V1.75 app_console_main; see
- * ../Yamaha-RCP-Chataigne-Module/docs/dm7-rcp-parameters.md, "YOSC" section)
- * settles the transport: the OSC server has SUBSCRIBE/UNSUBSCRIBE/KEEPALIVE
- * (real push feedback), and replies/pushes arrive under FIXED address prefixes
- * — /yosc:ok/get/... (get reply), /yosc:notify/set/... and /yosc:okm/set/...
- * (pushed updates), /yosc:ok/keepalive, /yosc:error/... — NOT an echoed
- * MIXER:Current address. oscEvent() dispatches on those prefixes.
+ * FEEDBACK (confirmed on a real DM7, 2026-09-17): the public v1.1.0 OSC spec does
+ * NOT document the response format, but get-reply feedback works. The desk answers
+ * every /yosc:req/get with /yosc:ok/get/<ParamID>/<X> and the value; oscEvent()
+ * dispatches on that prefix and routes it into the value tree (Refresh All Feedback
+ * Values -> 0 unhandled). Requires Chataigne's OSC-input "feedback" option so it
+ * also listens on the output's source port (the desk replies to the request's UDP
+ * source port, not a fixed one).
  *
- * Still unverified WITHOUT a real desk (static firmware extraction only): the
- * exact argument encoding after each prefix, and whether MIXER:Current/...
- * addresses (vs the ts:-prefixed object addresses seen in firmware) are
- * subscribable. So push is experimental and OFF by default; keep polling
- * (Refresh All Feedback Values / Scene Poll) as the fallback, and watch "Log
- * Unhandled Incoming" against hardware to confirm / correct the arg format.
+ * PUSH / SUBSCRIBE is a protocol dead-end for channels — NOT a bug. Hardware: a full
+ * MIXER:Current subscribe (1092 reqs) drew zero response. Firmware (V1.75): the whole
+ * subscribe surface is four objects — ts:@LogicalPositionControl,
+ * ts:3DRev/MasterFader/Level, ts:Scene/Status/EnableSceneView, ts:Show/On — none of
+ * them a channel. So there is no real-time channel push over YOSC; poll (Refresh /
+ * Scene Poll) is the only channel-feedback path. Use the sibling Yamaha-RCP module
+ * (TCP 49280, documented NOTIFY push) for live channel feedback. Use Subscribe /
+ * Keepalive stay OFF by default; Send Raw Subscribe with one of the four ts: objects
+ * is the only thing that can push. /yosc:notify/set and /yosc:okm/set handling is
+ * kept for those objects.
  */
 
 // ---- constants -------------------------------------------------------------

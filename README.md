@@ -18,7 +18,7 @@ Copy this folder into `<Documents>/Chataigne/modules/` and add the
 
 Up to 4 OSC controllers can be connected to one DM7.
 
-## What's covered (v0.3 — core live-mixing set + push feedback)
+## What's covered (v0.3 — core live-mixing set + poll feedback, hardware-confirmed)
 
 **Commands** (outgoing control):
 
@@ -31,9 +31,10 @@ Up to 4 OSC controllers can be connected to one DM7.
 - Query: **Refresh All Feedback Values** — fires a `get` for every value in the
   feedback tree so the console reports its current state (paced across update
   ticks to avoid flooding the console with UDP)
-- Feedback transport: **poll** (Refresh + optional Scene Poll) *or* firmware-derived
-  **push** — set *Use Subscribe* to have the desk push changes, with
-  *Keepalive Seconds* holding the session open (see below)
+- Feedback transport: **poll** (Refresh + optional Scene Poll) — confirmed working on
+  a real DM7. Push/**subscribe** is a protocol dead-end for channels (see *Feedback*
+  below); *Use Subscribe* / *Keepalive Seconds* are retained only for the four
+  subscribable `ts:` objects and are off by default
 - Advanced: **Send Raw Set / Get / Subscribe / Unsubscribe** escape hatches for any
   `MIXER:Current/...` (or `ts:...`) parameter
 
@@ -55,68 +56,56 @@ Not yet in scope: EQ/dynamics, monitor, 5.1 surround, cue, channel links.
 | HA (head-amp) gain | integer dB, **scale 1** — the wire value *is* the dB (`-6 … 66`) |
 | Pan | `-63 … 63` (0 = centre) |
 | Name | string, max 8 chars (the module truncates longer names to the first 8) |
-| Colour | `Blue/Orange/Yellow/Purple/Cyan/Magenta/Red/Green/LtGreen/White/Off` |
+| Colour | `Blue/Orange/Yellow/Purple/SkyBlue/Pink/Red/Green/LightGreen/White/Off` (desk may report `Off` as `OFF`) |
 
 Address grammar: `/yosc:req/set/<ParamID>/<X>[/<Y>] <value>` — e.g.
 `/yosc:req/set/MIXER:Current/InCh/Fader/Level/61 -2000`.
 
-## ⚠️ Feedback: blocked by a UDP reply-port mismatch (2026-09-02 DM7 capture)
+## Feedback (confirmed on a real DM7, 2026-09-17)
 
-**Hardware finding (packet capture, real DM7):** outgoing control works, but
-**incoming feedback never reaches Chataigne** — not a parser bug, a *port* problem.
+**Poll feedback works.** `Refresh All Feedback Values` returns **0 unhandled** — the
+desk answers every `get` and the whole value tree populates: levels, on, pan, names,
+colours, HA gain, DCA, mute groups, and scenes all round-trip. Replies arrive under
+fixed prefixes (`/yosc:ok/get/...`), which `oscEvent()` dispatches on.
 
-The DM7 sends every reply/push back to the **UDP source port of the request**, not
-to a fixed port. Chataigne's OSC *output* opens its own socket on an ephemeral
-source port (e.g. `49626`), while its OSC *input* listens on `49900`. So the desk
-replies to `49626` and the input on `49900` never hears them. Setting "Remote/Out
-Port = 49900" does **not** fix this — that's the *destination*; the *source* port is
-what the desk replies to, and it's auto-assigned.
+**The reply-port detail (solved).** The DM7 sends each reply back to the UDP *source*
+port of the request, not to a fixed port. Chataigne's OSC output uses an ephemeral
+source port while its input listens on 49900, so by default replies miss the
+listener. The fix is Chataigne's own **feedback** toggle on the OSC input, which
+*also* listens on the output's source port — you'll see
+`Feedback enabled, listening also on port NNNNN` in the log. With that on, YOSC poll
+feedback works; no proxy or RCP is needed just for polling. (An earlier note here
+called this a hard blocker — it is not; that toggle resolves it.)
 
-For two-way OSC to work, Chataigne must **send its requests from the same port it
-listens on (49900)**. If your Chataigne build has no way to bind the OSC output's
-source port to the input port, **YOSC feedback cannot work** through its split
-in/out sockets — use the sibling **Yamaha RCP module (TCP 49280)** for DM7 feedback
-instead (confirmed working on the same desk); keep OSC for send-only control.
+**Push / subscribe does NOT work for channels — a protocol limit, not a bug.**
+Confirmed two ways:
+- *Hardware:* subscribing the whole `MIXER:Current` tree (1092 requests) drew **zero**
+  response — no push, no ack, no error. The desk silently ignores it.
+- *Firmware* (V1.75 `app_console_main`): the **entire** subscribe surface is four
+  objects — `ts:@LogicalPositionControl`, `ts:3DRev/MasterFader/Level`,
+  `ts:Scene/Status/EnableSceneView`, `ts:Show/On`. No input fader, mute, mix, DCA,
+  etc. is subscribable.
 
-Also confirmed from the capture, for when the port issue is solved:
-- The desk **does** answer `get`s: `/yosc:ok/get/MIXER:Current/InCh/Fader/Level/N`
-  with an `int32` (`,i`) arg (`-32768` = −∞), matching the parser's prefix dispatch.
-- Replies arrive wrapped in an **OSC `#bundle`** (multiple `/yosc:ok/get/...`
-  messages per packet) — verify Chataigne unpacks bundles into `oscEvent` once
-  replies actually reach the listen port.
+So **channel feedback over OSC is poll-only** — there is no real-time "fader moved on
+the desk → Chataigne updates" path in YOSC. For live channel feedback use the sibling
+**Yamaha RCP module (TCP 49280)**, which has a documented `NOTIFY` push. `Use
+Subscribe` stays off by default; only `Send Raw Subscribe` with one of the four `ts:`
+objects above can ever push anything.
 
-## ⚠️ Feedback is experimental (but firmware-informed)
+**Scenes (arg layout hardware-confirmed):**
+- `sscurrentt_ex` reply → `list, number, modified-flag` (e.g. `scene_a 3.00 modified`).
+- `ssinfot_ex` reply → `list, number, number, name, comment, store-type`
+  (e.g. `scene_a 3.00 3.00 "Base Main House3" "26-27" user`) — **the name is the 4th arg**.
 
-The public v1.1.0 OSC spec **does not document the response/feedback format**.
-However, reverse-engineering the DM7 firmware (V1.75 `app_console_main`) settles
-the *transport* — see the **YOSC** section of
-[`docs/dm7-rcp-parameters.md`](https://github.com/vkoeppel/Yamaha-RCP-Chataigne-Module/blob/main/docs/dm7-rcp-parameters.md)
-in the sibling Yamaha-RCP module:
+The module records the number from `sscurrentt_ex`, then chains `ssinfot_ex` for the
+name into a read-only `Scene > A/B > Number / Name` holder. `Refresh All Feedback
+Values` (which now also queries the current scene), an optional **Scene Poll Seconds**
+interval, and the **Query Current Scene** command all drive this. Note: a DM7 that uses
+only one scene list replies for `scene_a` and ignores `scene_b`.
 
-- Replies and pushes arrive under **fixed address prefixes**, not an echoed
-  `MIXER:Current/...` address: `/yosc:ok/get/...` (reply to a `get`),
-  `/yosc:notify/set/...` and `/yosc:okm/set/...` (pushed updates),
-  `/yosc:ok/keepalive`, `/yosc:error/...`. The parser now dispatches on these
-  (with the old `MIXER:Current` scan kept only as a last-resort fallback).
-- The OSC server has **`subscribe` / `unsubscribe` / `keepalive`** — real push
-  feedback, so you don't have to poll. *Use Subscribe* subscribes
-  the whole value tree; *Keepalive Seconds* pings the desk so it doesn't drop the
-  session (the firmware closes idle sessions, which would kill push).
-
-**Still unverified without a real desk** (this is static firmware extraction, not
-a hardware capture): the exact *argument encoding* after each prefix, and whether
-`MIXER:Current/...` addresses — rather than the `ts:`-prefixed object addresses
-seen in the firmware — are actually subscribable. So push is **off by default**;
-poll (Refresh / Scene Poll) remains the safe fallback. Enable **Log Unhandled
-Incoming**, watch the logger against real hardware, and open an issue/PR with what
-you see.
-
-**Scenes:** the current scene *number* comes from `sscurrentt_ex`; the *name*
-comes from a separate `ssinfot_ex` query (firmware `SSCURRENTT_EX` vs
-`SSINFOT_EX`), which the module now chains automatically. It provides a
-`Scene > A/B > Number / Name` holder, a **Query Current Scene** command, and an
-optional **Scene Poll Seconds** interval poll. The reply arg shapes are still
-best-effort — confirm/correct via *Log Unhandled Incoming*.
+> A module *command* is a **template** — it only fires from a Mapping / Sequence /
+> State action (or the poll), not by clicking it in the command list. That's why
+> "Query Current Scene" appears to "do nothing" when clicked directly.
 
 **`scpmode`:** the desk's per-session `scpmode` options also work over OSC. Note
 the Bitfocus Companion module sends `scpmode sstype "text"`, but **`sstype` is not
@@ -124,11 +113,12 @@ a DM7 key** and errors on a DM7 — don't copy it.
 
 ## Provenance
 
-The feedback/transport details above are derived from static reverse-engineering
-of the DM7 firmware, documented in the sibling
+The transport was originally derived from static reverse-engineering of the DM7
+firmware (V1.75 `app_console_main`), documented in the sibling
 [Yamaha RCP Chataigne module](https://github.com/vkoeppel/Yamaha-RCP-Chataigne-Module)
-(`docs/dm7-rcp-parameters.md`). They are **not** confirmed against real hardware;
-treat anything feedback-related as experimental until verified on a desk.
+(`docs/dm7-rcp-parameters.md`, "YOSC" section). The get/reply transport, scene reply
+layout, colour names, and the subscribe limitation are now **confirmed against real
+hardware** (2026-09-16/17).
 
 ## Development notes
 
@@ -145,6 +135,16 @@ modern features. When editing `DM7-OSC.js`, avoid:
   on the sibling RCP module: `String.indexOf()` calls that matched under Node
   quietly returned false on real hardware, with no error logged - the harder
   failure mode to catch)
+- `String.split(sep)` with a **multi-character** `sep` — this engine splits on the
+  separator as a **character set**, not as a substring. `"…Level/5".split("sscurrentt")`
+  matched (any of `s/c/u/r/e/n/t`) and returned length > 1, so scene detection ate
+  every reply. Single-char separators like `split("/")` are fine; for substring
+  tests use the hand-rolled `containsSub()`. **(confirmed on real DM7)**
+- **relational operators (`<` / `>`) on strings** — they coerce operands to numbers,
+  so `"L" < "0"` is `NaN < 0` (false) and a `ch < "0" || ch > "9"` digit check passes
+  for letters. `isIntToken()` used to accept `"Level"` this way and no feedback routed.
+  Test characters via a lookup object (`DIGIT_SET[ch]`), not `<`/`>`. `==`/`!=` on
+  non-numeric strings are fine. **(confirmed on real DM7)**
 - `Number.prototype.toFixed()` — throws `Unknown function 'toFixed'` (confirmed
   on real DM7 hardware via `Recall Scene`/`ssrecallt_ex`, which needs an
   "x.xx" string). Build fixed-point strings by hand instead - see
@@ -153,7 +153,8 @@ modern features. When editing `DM7-OSC.js`, avoid:
   isn't trustworthy here - it appended a stray `.0`, e.g. `"1.00"` came out as
   `"1.0.0.0"`)
 
-Safe: `split`, `charAt`, indexing, `parseInt`/`parseFloat`, `Math.*`.
+Safe: `split` **with a single-char separator only**, `charAt`, indexing,
+`parseInt`/`parseFloat`, `Math.*`, `==`/`!=` (including on strings).
 
 Also: a module-parameter's `local.parameters.<name>` accessor is derived from its
 **display name** in `module.json` — keep names to plain words (e.g. `Use Subscribe`

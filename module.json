@@ -5,7 +5,7 @@
   "author": "Victor Koeppel",
 
   "version": "0.3.0",
-  "description": "Control a Yamaha DM7 / DM7 Compact mixing console over OSC (yosc:req protocol). Core live-mixing set: faders, on, pan, sends, labels, DCA & mute groups, scene recall. Bidirectional feedback via poll or firmware-derived subscribe/keepalive push (experimental).",
+  "description": "Control a Yamaha DM7 / DM7 Compact mixing console over OSC (yosc:req protocol). Core live-mixing set: faders, on, pan, sends, labels, DCA & mute groups, scene recall. Poll-based feedback (Refresh / Scene Poll) is confirmed working on hardware; the desk has no channel push over OSC, so use the Yamaha-RCP module for live channel feedback.",
   "url": "https://github.com/vk0eppel/DM7-OSC-Chataigne-Module",
   "downloadURL": "https://github.com/vk0eppel/DM7-OSC-Chataigne-Module",
 
@@ -45,7 +45,7 @@
     "Use Subscribe": {
       "type": "Boolean",
       "default": false,
-      "description": "Ask the desk to PUSH parameter changes (firmware-confirmed OSC subscribe/notify) instead of polling. Requires 'Generate Feedback Values'. Experimental: the subscribe verb is firmware-derived but unverified on hardware - keep 'Log Unhandled Incoming' on. Leave off to use the poll-based Refresh instead."
+      "description": "Ask the desk to PUSH parameter changes via OSC subscribe/notify. CONFIRMED on hardware NOT to work for channel parameters: subscribing MIXER:Current addresses draws no response, and firmware exposes subscribe for only four ts: objects (3D-reverb master, OBA, scene-view, show-on) - none of them channels. Leave OFF and use the poll-based Refresh; for live channel feedback use the Yamaha-RCP module."
     },
     "Keepalive Seconds": {
       "type": "Float",
@@ -57,14 +57,14 @@
     "Log Unhandled Incoming": {
       "type": "Boolean",
       "default": true,
-      "description": "Log any incoming OSC that the parser does not recognise. Useful for confirming/correcting DM7 feedback: the reply address prefixes (/yosc:ok/get, /yosc:notify/set) are firmware-derived, but the exact argument encoding still needs a real desk."
+      "description": "Log any incoming OSC that the parser does not recognise. Handy for diagnosing feedback; also gates the module's 'routing miss' diagnostics. A healthy Refresh against a real DM7 produces zero 'Unhandled OSC in' lines."
     },
     "Scene Poll Seconds": {
       "type": "Float",
       "default": 0,
       "min": 0,
       "max": 3600,
-      "description": "Poll the current scene of both lists every N seconds (0 = off). Updates the Scene value holders (number via sscurrentt_ex, name via ssinfot_ex). Arg encoding is best-effort, so this is experimental."
+      "description": "Poll the current scene of both lists every N seconds (0 = off). Updates the Scene value holders (number via sscurrentt_ex, name via ssinfot_ex). Reply arg layout is hardware-confirmed (name is the 4th ssinfot_ex arg). A desk using one scene list replies for A and ignores B."
     }
   },
 
